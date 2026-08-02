@@ -289,7 +289,7 @@ async function handleNewPost(postMessage: string) {
   );
 
   const keyword = (parsed.pexels_keyword as string) ?? "massage therapy pain relief";
-  console.log("W5 fired — keyword:", keyword, "caption:", parsed.caption);
+  console.log("W5 fired — full parsed:", JSON.stringify(parsed).slice(0, 300));
   const script = (parsed.script as string) ??
     "Is your body in pain? At Pain Rheylief House, our expert therapists provide professional pain relief treatments. Visit us at The Healthy Hub, Arellano Street, Tacloban City. Open 1PM to 8PM daily. Message us on Facebook to book your session today!";
   const caption = (parsed.caption as string) ??
