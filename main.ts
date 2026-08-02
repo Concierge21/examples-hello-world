@@ -443,8 +443,9 @@ async function processEvents(body: Record<string, unknown>) {
       if (!postMessage) continue;
 
       const postId = String(value.post_id ?? "");
-      if (postId && (await seenBefore(`post_${postId}`, 24 * 60 * 60 * 1000))) continue;
-
+      const dedupKey = postId || String(value.message ?? "").slice(0, 50);
+      if (dedupKey && (await seenBefore(`feed_${dedupKey}`, 24 * 60 * 60 * 1000))) continue;
+      if (await seenBefore(`feed_rate_limit`, 5 * 60 * 1000)) continue;
       const upper = postMessage.toUpperCase();
       if (upper.startsWith("BUSY") || upper.startsWith("OPEN")) {
         await handleScheduleCommand(postMessage); // Workflow 4
