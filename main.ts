@@ -399,6 +399,7 @@ Deno.cron("monthly lead followup", "0 2 1 * *", async () => {
 // ------------------------------------------------------------
 
 async function processEvents(body: Record<string, unknown>) {
+  console.log("RAW PAYLOAD:", JSON.stringify(body).slice(0, 500));
   const entries = (body.entry as Record<string, unknown>[]) ?? [];
   for (const entry of entries) {
     // ---- Messenger events → Workflow 1 ----
