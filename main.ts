@@ -424,12 +424,18 @@ async function processEvents(body: Record<string, unknown>) {
       const value = change.value as Record<string, unknown> | undefined;
       if (!value) continue;
 
-      // Only NEW posts (not comments, likes, edits, deletes)
+      // Only NEW posts — skip edits, deletes, likes, comments, reactions
       const verb = String(value.verb ?? "");
       const item = String(value.item ?? "");
-      if (verb !== "add") continue;
-      const allowedItems = ["status", "post", "photo", "video"];
-      if (item && !allowedItems.includes(item)) continue;
+
+      // Accept "add" or "publish" — Facebook uses both for new posts
+      // Also accept empty verb since some post types omit it
+      const blockedVerbs = ["edited", "delete", "remove", "unlike", "hide"];
+      if (blockedVerbs.includes(verb)) continue;
+
+      // Block comments, likes, reactions — allow posts, shares, photos, videos, empty
+      const blockedItems = ["comment", "like", "reaction", "friendship", "mention"];
+      if (item && blockedItems.includes(item)) continue;
 
       const postMessage = String(value.message ?? value.story ?? "");
       if (!postMessage) continue;
@@ -490,3 +496,4 @@ Deno.serve(async (req: Request) => {
 
   return new Response("Method not allowed", { status: 405 });
 });
+
