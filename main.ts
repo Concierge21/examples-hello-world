@@ -137,7 +137,7 @@ Keep replies short, suitable for Messenger.
 CRITICAL BOOKING RULE:
 Only add the booking tag when you have ALL FOUR of these from the client: their real name, the service, the date, and the time. If any one is missing, ask for it and do NOT add the tag. Never invent, guess, or use a placeholder for the name — never write things like "Hindi pa nakumpirma", "unknown", "client", or "N/A". The name must be one the client actually typed.
 
-When and only when all four are confirmed, add this exact tag at the end of your reply: [BOOKING_CONFIRMED: name=NAME, service=SERVICE, date=DATE, time=TIME]';
+When and only when all four are confirmed, add this exact tag at the end of your reply: [BOOKING_CONFIRMED: name=NAME, service=SERVICE, date=DATE, time=TIME]`;
 type ChatMsg = { role: "user" | "assistant"; content: string };
 
 async function getHistory(senderId: string): Promise<ChatMsg[]> {
