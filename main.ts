@@ -334,7 +334,7 @@ async function handleNewPost(postMessage: string) {
 // Workflow 2 — Daily 12PM Manila reminder (04:00 UTC)
 // ------------------------------------------------------------
 
-Deno.cron("daily client reminder", "0 4 * * *", async () => {
+async function dailyClientReminder() {
   if (!SHEETS_DATA_URL) return;
   try {
     const res = await fetch(SHEETS_DATA_URL);
@@ -361,7 +361,9 @@ Deno.cron("daily client reminder", "0 4 * * *", async () => {
   } catch (e) {
     console.error("Daily reminder failed:", e);
   }
-});
+}
+
+Deno.cron("daily client reminder", "0 4 * * *", dailyClientReminder);
 
 // ------------------------------------------------------------
 // Workflow 3 — Monthly follow-up (1st @ 10AM Manila = 02:00 UTC)
@@ -480,7 +482,10 @@ if (url.pathname === "/test-owner") {
       headers: { "Content-Type": "application/json" },
     });
   }
-
+if (url.pathname === "/test-reminder") {
+    await dailyClientReminder();
+    return new Response("Reminder fired — check Messenger and Deno logs");
+  }
   if (url.pathname !== "/webhook") {
     return new Response("Not found", { status: 404 });
   }
