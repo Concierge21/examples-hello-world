@@ -488,6 +488,12 @@ if (url.pathname === "/test-reminder") {
     await dailyClientReminder();
     return new Response("Reminder fired — check Messenger and Deno logs");
   }
+    if (url.pathname === "/reset-chat") {
+    const sid = url.searchParams.get("id") ?? "";
+    if (!sid) return new Response("Missing ?id=");
+    await kv.delete(["chat_history", sid]);
+    return new Response(`Chat history cleared for ${sid}`);
+  }
   if (url.pathname !== "/webhook") {
     return new Response("Not found", { status: 404 });
   }
