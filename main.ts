@@ -460,6 +460,97 @@ async function processEvents(body: Record<string, unknown>) {
   }
 }
 
+const CLOUDINARY_CLOUD_NAME = Deno.env.get("CLOUDINARY_CLOUD_NAME") ?? "";
+const CLOUDINARY_API_KEY = Deno.env.get("CLOUDINARY_API_KEY") ?? "";
+const CLOUDINARY_API_SECRET = Deno.env.get("CLOUDINARY_API_SECRET") ?? "";
+const OPENAI_API_KEY = Deno.env.get("OPENAI_API_KEY") ?? "";
+
+async function sha1Hex(input: string): Promise<string> {
+  const buf = await crypto.subtle.digest("SHA-1", new TextEncoder().encode(input));
+  return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+async function makeVoiceover(script: string): Promise<Uint8Array | null> {
+  try {
+    const res = await fetch("https://api.openai.com/v1/audio/speech", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${OPENAI_API_KEY}`,
+      },
+      body: JSON.stringify({
+        model: "gpt-4o-mini-tts",
+        voice: "nova",
+        input: script.slice(0, 4000),
+      }),
+    });
+    if (!res.ok) {
+      console.error("TTS failed:", res.status, await res.text());
+      return null;
+    }
+    return new Uint8Array(await res.arrayBuffer());
+  } catch (e) {
+    console.error("TTS error:", e);
+    return null;
+  }
+}
+
+async function cloudinaryUpload(file: string, publicId: string): Promise<string> {
+  try {
+    const timestamp = Math.floor(Date.now() / 1000);
+    const toSign = `public_id=${publicId}&timestamp=${timestamp}${CLOUDINARY_API_SECRET}`;
+    const signature = await sha1Hex(toSign);
+
+    const form = new FormData();
+    form.set("file", file);
+    form.set("api_key", CLOUDINARY_API_KEY);
+    form.set("timestamp", String(timestamp));
+    form.set("public_id", publicId);
+    form.set("signature", signature);
+
+    const res = await fetch(
+      `https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD_NAME}/video/upload`,
+      { method: "POST", body: form },
+    );
+    const data = await res.json();
+    if (!res.ok) {
+      console.error("Cloudinary upload failed:", JSON.stringify(data).slice(0, 300));
+      return "";
+    }
+    return data.public_id ?? "";
+  } catch (e) {
+    console.error("Cloudinary upload error:", e);
+    return "";
+  }
+}
+
+function bytesToDataUri(bytes: Uint8Array): string {
+  let binary = "";
+  const chunk = 8192;
+  for (let i = 0; i < bytes.length; i += chunk) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
+  }
+  return `data:audio/mp3;base64,${btoa(binary)}`;
+}
+
+async function buildVoicedVideo(videoUrl: string, script: string): Promise<string> {
+  const stamp = Date.now();
+  const audioBytes = await makeVoiceover(script);
+  if (!audioBytes) return "";
+
+  const audioId = await cloudinaryUpload(bytesToDataUri(audioBytes), `vo_${stamp}`);
+  const videoId = await cloudinaryUpload(videoUrl, `clip_${stamp}`);
+  if (!audioId || !videoId) return "";
+
+  const merged =
+    `https://res.cloudinary.com/${CLOUDINARY_CLOUD_NAME}/video/upload/ac_none/l_audio:${audioId}/fl_layer_apply/${videoId}.mp4`;
+
+  try {
+    await fetch(merged, { method: "GET" });
+  } catch { /* ignore */ }
+
+  return merged;
+}
 Deno.serve(async (req: Request) => {
   const url = new URL(req.url);
 
@@ -493,6 +584,15 @@ if (url.pathname === "/test-reminder") {
     if (!sid) return new Response("Missing ?id=");
     await kv.delete(["chat_history", sid]);
     return new Response(`Chat history cleared for ${sid}`);
+  }
+  if (url.pathname === "/test-cloudinary") {
+    const clip = await pickPexelsVideoUrl("spine anatomy 3d");
+    if (!clip) return new Response("No Pexels clip found");
+    const id = await cloudinaryUpload(clip, `test_${Date.now()}`);
+    if (!id) return new Response("Cloudinary upload FAILED — check Deno logs");
+    return new Response(
+      `Upload OK\npublic_id: ${id}\nhttps://res.cloudinary.com/${CLOUDINARY_CLOUD_NAME}/video/upload/${id}.mp4`,
+    );
   }
   if (url.pathname !== "/webhook") {
     return new Response("Not found", { status: 404 });
