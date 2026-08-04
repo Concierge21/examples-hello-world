@@ -589,6 +589,36 @@ async function buildVoicedVideo(videoUrls: string[], script: string): Promise<st
 
   return merged;
 }
+const ANATOMY_CLIPS: Record<string, string[]> = {
+  "lower back": ["anat_back_1", "anat_back_2"],
+  "upper back": ["anat_back_1", "anat_back_2"],
+  "neck": ["anat_neck_1"],
+  "shoulders": ["anat_shoulder_1"],
+  "knees": ["anat_knee_1"],
+  "hips": ["anat_hip_1"],
+  "wrists": ["anat_wrist_1"],
+  "ankles": ["anat_ankle_1"],
+  "jaw": ["anat_jaw_1"],
+  "elbows": ["anat_elbow_1"],
+};
+
+function pickClipFor(bodyPart: string): string {
+  const key = bodyPart.toLowerCase().trim();
+  const list = ANATOMY_CLIPS[key] ?? Object.values(ANATOMY_CLIPS).flat();
+  return list[Math.floor(Math.random() * list.length)];
+}
+
+async function buildVoicedFromLibrary(clipId: string, script: string): Promise<string> {
+  const audioBytes = await makeVoiceover(script);
+  if (!audioBytes) return "";
+  const audioId = await cloudinaryUpload(bytesToDataUri(audioBytes), `vo_${Date.now()}`);
+  if (!audioId) return "";
+  const merged =
+    `https://res.cloudinary.com/${CLOUDINARY_CLOUD_NAME}/video/upload/c_fill,h_1920,w_1080/ac_none/l_audio:${audioId}/fl_layer_apply/${clipId}.mp4`;
+  console.log("Weekly Reel merged URL:", merged);
+  try { await fetch(merged); } catch { /* ignore */ }
+  return merged;
+}
 async function weeklyAnatomyReel() {
   const parsed = await geminiJson(
     `Create a weekly educational Reel for Pain Rheylief House, a pain relief clinic in Tacloban City, Philippines.\n\nPick ONE body part from this list: lower back, neck, shoulders, knees, hips, wrists, upper back, ankles, jaw, elbows.\n\nRespond ONLY with valid JSON. No markdown, no backticks. Every field a non-empty string:\n{\n  "body_part": "the part you chose",\n  "pexels_keyword": "stock video search term, 2-3 words",\n  "script": "25-second English voiceover: (1) hook question about that pain, (2) what that body part actually does, (3) the most common cause of pain there, (4) ONE simple thing a person can do at home to relieve it, (5) end with: For lasting relief, visit Pain Rheylief House at The Healthy Hub, Arellano Street, Tacloban City. Open 1PM to 8PM daily. Message us to book a consultation.",\n  "caption": "English caption under 150 characters naming the body part and the tip, one emoji, invites a consultation"\n}\n\nCONTENT RULES:\n- EDUCATIONAL only. NEVER mention prices, rates, packages, peso amounts, or promos.\n- Explain the anatomy in plain language a non-medical reader understands.\n- The home tip must be safe and general — stretching, posture, heat, rest. Never diagnose.\n- ENGLISH ONLY. No Tagalog, no Taglish.`,
@@ -608,13 +638,7 @@ async function weeklyAnatomyReel() {
     return;
   }
 
-  const clips = await pickPexelsVideoUrls(keyword, 3);
-  if (clips.length === 0) {
-    console.error("Weekly Reel: no clips for", keyword);
-    return;
-  }
-
-  const voicedUrl = await buildVoicedVideo(clips, script);
+ const voicedUrl = await buildVoicedFromLibrary(pickClipFor(bodyPart), script);
   if (!voicedUrl) {
     console.error("Weekly Reel: merge failed");
     return;
