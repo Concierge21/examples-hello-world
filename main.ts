@@ -284,6 +284,30 @@ async function pickPexelsVideoUrl(keyword: string): Promise<string> {
     return "";
   }
 }
+async function pickPexelsVideoUrls(keyword: string, count: number): Promise<string[]> {
+  if (!PEXELS_API_KEY) return [];
+  try {
+    const res = await fetch(
+      `https://api.pexels.com/videos/search?query=${encodeURIComponent(keyword)}&per_page=15&orientation=portrait&min_duration=8`,
+      { headers: { Authorization: PEXELS_API_KEY } },
+    );
+    if (!res.ok) return [];
+    const data = await res.json();
+    const out: string[] = [];
+    for (const v of data.videos ?? []) {
+      const files = v.video_files ?? [];
+      const pick = files.find((f: { height: number; width: number; quality: string }) =>
+        f.height > f.width && f.quality === "hd"
+      ) || files.find((f: { height: number; width: number }) => f.height > f.width);
+      if (pick?.link) out.push(pick.link);
+      if (out.length >= count) break;
+    }
+    return out;
+  } catch (e) {
+    console.error("Pexels multi error:", e);
+    return [];
+  }
+}
 
 async function handleNewPost(postMessage: string) {
   const parsed = await geminiJson(
@@ -593,6 +617,16 @@ if (url.pathname === "/test-reminder") {
     return new Response(
       `Upload OK\npublic_id: ${id}\nhttps://res.cloudinary.com/${CLOUDINARY_CLOUD_NAME}/video/upload/${id}.mp4`,
     );
+  }
+  if (url.pathname === "/test-voiced") {
+    const clips = await pickPexelsVideoUrls("spine anatomy 3d", 3);
+    if (clips.length === 0) return new Response("No Pexels clips found");
+    const merged = await buildVoicedVideo(
+      clips,
+      "Your spine carries you through every movement of your day. When the muscles around it tighten, pain follows. For professional pain relief, visit Pain Rheylief House at The Healthy Hub, Arellano Street, Tacloban City. Open 1PM to 8PM daily.",
+    );
+    if (!merged) return new Response("Merge FAILED — check Deno logs");
+    return new Response(`Merged OK\n${merged}`);
   }
   if (url.pathname !== "/webhook") {
     return new Response("Not found", { status: 404 });
