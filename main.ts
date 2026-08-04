@@ -608,20 +608,34 @@ function pickClipFor(bodyPart: string): string {
   return list[Math.floor(Math.random() * list.length)];
 }
 
-async function buildVoicedFromLibrary(clipId: string, script: string): Promise<string> {
+async function buildReel(clipId: string, script: string, lines: string[]): Promise<string> {
   const audioBytes = await makeVoiceover(script);
   if (!audioBytes) return "";
   const audioId = await cloudinaryUpload(bytesToDataUri(audioBytes), `vo_${Date.now()}`);
   if (!audioId) return "";
+
+  const clean = (s: string) =>
+    encodeURIComponent(s.replace(/[^a-zA-Z0-9 ]/g, " ").replace(/\s+/g, " ").trim().slice(0, 55));
+
+  const span = 25 / Math.max(lines.length, 1);
+  let textChain = "";
+  lines.forEach((line, i) => {
+    const start = Math.round(i * span);
+    const end = Math.round((i + 1) * span);
+    textChain +=
+      `l_text:Arial_62_bold:${clean(line)},co_white,b_rgb:000000B3,g_south,y_300,w_900,c_fit,so_${start},eo_${end}/fl_layer_apply/`;
+  });
+
   const merged =
-    `https://res.cloudinary.com/${CLOUDINARY_CLOUD_NAME}/video/upload/c_fill,h_1920,w_1080/ac_none/l_audio:${audioId}/fl_layer_apply/${clipId}.mp4`;
-  console.log("Weekly Reel merged URL:", merged);
+    `https://res.cloudinary.com/${CLOUDINARY_CLOUD_NAME}/video/upload/c_fill,h_1920,w_1080/${textChain}ac_none/l_audio:${audioId}/fl_layer_apply/${clipId}.mp4`;
+
+  console.log("Weekly Reel URL:", merged);
   try { await fetch(merged); } catch { /* ignore */ }
   return merged;
 }
 async function weeklyAnatomyReel() {
   const parsed = await geminiJson(
-    `Create a weekly educational Reel for Pain Rheylief House, a pain relief clinic in Tacloban City, Philippines.\n\nPick ONE body part from this list: lower back, neck, shoulders, knees, hips, wrists, upper back, ankles, jaw, elbows.\n\nRespond ONLY with valid JSON. No markdown, no backticks. Every field a non-empty string:\n{\n  "body_part": "the part you chose",\n  "pexels_keyword": "stock video search term, 2-3 words",\n  "script": "25-second English voiceover: (1) hook question about that pain, (2) what that body part actually does, (3) the most common cause of pain there, (4) ONE simple thing a person can do at home to relieve it, (5) end with: For lasting relief, visit Pain Rheylief House at The Healthy Hub, Arellano Street, Tacloban City. Open 1PM to 8PM daily. Message us to book a consultation.",\n  "caption": "English caption under 150 characters naming the body part and the tip, one emoji, invites a consultation"\n}\n\nCONTENT RULES:\n- EDUCATIONAL only. NEVER mention prices, rates, packages, peso amounts, or promos.\n- Explain the anatomy in plain language a non-medical reader understands.\n- The home tip must be safe and general — stretching, posture, heat, rest. Never diagnose.\n- ENGLISH ONLY. No Tagalog, no Taglish.`,
+    `Create a weekly educational Reel for Pain Rheylief House, a pain relief clinic in Tacloban City, Philippines.\n\nPick ONE body part from this list: lower back, neck, shoulders, knees, hips, wrists, upper back, ankles, jaw, elbows.\n\nRespond ONLY with valid JSON. No markdown, no backticks. Every field a non-empty string:\n{\n  "body_part": "the part you chose",\n  "pexels_keyword": "stock video search term, 2-3 words",\n  "script": "25-second English voiceover: (1) hook question about that pain, (2) what that body part actually does, (3) the most common cause of pain there, (4) ONE simple thing a person can do at home to relieve it, (5) end with: For lasting relief, visit Pain Rheylief House at The Healthy Hub, Arellano Street, Tacloban City. Open 1PM to 8PM daily. Message us to book a consultation.",\n  "text_lines": ["4 to 6 on-screen lines, max 6 words each, following the voiceover order: hook, cause, the movement, how long to hold, why it helps, invitation to message"],\n  "caption": "English caption under 150 characters naming the body part and the tip, one emoji, invites a consultation"\n}\n\nCONTENT RULES:\n- EDUCATIONAL only. NEVER mention prices, rates, packages, peso amounts, or promos.\n- Explain the anatomy in plain language a non-medical reader understands.\n- The home tip must be safe and general — stretching, posture, heat, rest. Never diagnose.\n- ENGLISH ONLY. No Tagalog, no Taglish.`,
   );
 
   const bodyPart = (parsed.body_part as string) || "lower back";
@@ -638,7 +652,12 @@ async function weeklyAnatomyReel() {
     return;
   }
 
- const voicedUrl = await buildVoicedFromLibrary(pickClipFor(bodyPart), script);
+const rawLines = parsed.text_lines;
+  const lines = Array.isArray(rawLines) && rawLines.length
+    ? (rawLines as string[])
+    : ["Body pain slowing you down", "Try this simple stretch", "Hold for 20 seconds", "Message us for a consultation"];
+
+  const voicedUrl = await buildReel(pickClipFor(bodyPart), script, lines);
   if (!voicedUrl) {
     console.error("Weekly Reel: merge failed");
     return;
