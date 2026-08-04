@@ -557,17 +557,30 @@ function bytesToDataUri(bytes: Uint8Array): string {
   return `data:audio/mp3;base64,${btoa(binary)}`;
 }
 
-async function buildVoicedVideo(videoUrl: string, script: string): Promise<string> {
+async function buildVoicedVideo(videoUrls: string[], script: string): Promise<string> {
   const stamp = Date.now();
   const audioBytes = await makeVoiceover(script);
   if (!audioBytes) return "";
 
   const audioId = await cloudinaryUpload(bytesToDataUri(audioBytes), `vo_${stamp}`);
-  const videoId = await cloudinaryUpload(videoUrl, `clip_${stamp}`);
-  if (!audioId || !videoId) return "";
+  if (!audioId) return "";
+
+  const ids: string[] = [];
+  for (let i = 0; i < videoUrls.length; i++) {
+    const id = await cloudinaryUpload(videoUrls[i], `clip_${stamp}_${i}`);
+    if (id) ids.push(id);
+  }
+  if (ids.length === 0) return "";
+
+  const SIZE = "c_fill,h_1920,w_1080";
+  let chain = `${SIZE}/`;
+  for (let i = 1; i < ids.length; i++) {
+    chain += `l_video:${ids[i]}/${SIZE}/fl_splice,fl_layer_apply/`;
+  }
+  chain += `ac_none/l_audio:${audioId}/fl_layer_apply/`;
 
   const merged =
-    `https://res.cloudinary.com/${CLOUDINARY_CLOUD_NAME}/video/upload/ac_none/l_audio:${audioId}/fl_layer_apply/${videoId}.mp4`;
+    `https://res.cloudinary.com/${CLOUDINARY_CLOUD_NAME}/video/upload/${chain}${ids[0]}.mp4`;
 
   try {
     await fetch(merged, { method: "GET" });
