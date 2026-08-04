@@ -571,6 +571,7 @@ async function buildVoicedVideo(videoUrls: string[], script: string): Promise<st
     if (id) ids.push(id);
   }
   if (ids.length === 0) return "";
+  console.log("Splice: uploaded", ids.length, "clips:", ids.join(", "));
 
   const SIZE = "c_fill,h_1920,w_1080";
   let chain = `${SIZE}/`;
@@ -588,6 +589,56 @@ async function buildVoicedVideo(videoUrls: string[], script: string): Promise<st
 
   return merged;
 }
+async function weeklyAnatomyReel() {
+  const parsed = await geminiJson(
+    `Create a weekly educational Reel for Pain Rheylief House, a pain relief clinic in Tacloban City, Philippines.\n\nPick ONE body part from this list: lower back, neck, shoulders, knees, hips, wrists, upper back, ankles, jaw, elbows.\n\nRespond ONLY with valid JSON. No markdown, no backticks. Every field a non-empty string:\n{\n  "body_part": "the part you chose",\n  "pexels_keyword": "stock video search term, 2-3 words",\n  "script": "25-second English voiceover: (1) hook question about that pain, (2) what that body part actually does, (3) the most common cause of pain there, (4) ONE simple thing a person can do at home to relieve it, (5) end with: For lasting relief, visit Pain Rheylief House at The Healthy Hub, Arellano Street, Tacloban City. Open 1PM to 8PM daily. Message us to book a consultation.",\n  "caption": "English caption under 150 characters naming the body part and the tip, one emoji, invites a consultation"\n}\n\nCONTENT RULES:\n- EDUCATIONAL only. NEVER mention prices, rates, packages, peso amounts, or promos.\n- Explain the anatomy in plain language a non-medical reader understands.\n- The home tip must be safe and general — stretching, posture, heat, rest. Never diagnose.\n- ENGLISH ONLY. No Tagalog, no Taglish.`,
+  );
+
+  const bodyPart = (parsed.body_part as string) || "lower back";
+  const keyword = (parsed.pexels_keyword as string) || "human anatomy medical";
+  const script = (parsed.script as string) || "";
+  const rawCaption = (parsed.caption as string) ?? "";
+  const caption = rawCaption.trim() && rawCaption.trim() !== "undefined"
+    ? rawCaption.trim()
+    : "Your body deserves to heal. Message us for a consultation. 💆";
+
+  console.log("Weekly Reel — body part:", bodyPart, "| keyword:", keyword);
+  if (!script) {
+    console.error("Weekly Reel: no script from Gemini");
+    return;
+  }
+
+  const clips = await pickPexelsVideoUrls(keyword, 3);
+  if (clips.length === 0) {
+    console.error("Weekly Reel: no clips for", keyword);
+    return;
+  }
+
+  const voicedUrl = await buildVoicedVideo(clips, script);
+  if (!voicedUrl) {
+    console.error("Weekly Reel: merge failed");
+    return;
+  }
+
+  const hashtags =
+    "#PainRelief #MassageTherapy #PainRheyliefHouse #TaclobanCity #BodyPain #PainFree #WellnessPh";
+
+  const form = new URLSearchParams();
+  form.set("access_token", FB_PAGE_TOKEN);
+  form.set("description", `${caption}\n\n${hashtags}`);
+  form.set("file_url", voicedUrl);
+
+  const res = await fetch(`${GRAPH}/${PAGE_ID}/videos`, { method: "POST", body: form });
+  const ok = res.ok;
+  if (!ok) console.error("Weekly Reel post failed:", res.status, await res.text());
+
+  await sendMessengerText(
+    OWNER_PSID,
+    ok ? `🎬 Weekly Reel posted — ${bodyPart}\n\n📝 ${caption}` : `⚠️ Weekly Reel failed. Check logs.`,
+  );
+}
+
+Deno.cron("weekly anatomy reel", "0 1 * * 1", weeklyAnatomyReel);
 Deno.serve(async (req: Request) => {
   const url = new URL(req.url);
 
@@ -640,6 +691,10 @@ if (url.pathname === "/test-reminder") {
     );
     if (!merged) return new Response("Merge FAILED — check Deno logs");
     return new Response(`Merged OK\n${merged}`);
+  }
+  if (url.pathname === "/test-weekly") {
+    await weeklyAnatomyReel();
+    return new Response("Weekly Reel fired — check the Page and logs");
   }
   if (url.pathname !== "/webhook") {
     return new Response("Not found", { status: 404 });
