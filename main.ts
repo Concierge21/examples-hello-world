@@ -636,13 +636,31 @@ async function buildReel30Sec(clipId: string, script: string, lines: string[], t
 `https://res.cloudinary.com/${CLOUDINARY_CLOUD_NAME}/video/upload/c_fill,h_1920,w_1080/${textChain}l_audio:${audioId}/fl_layer_apply/${clipId}.mp4`;
   console.log("30-Second Weekly Reel URL:", merged);
   
-  // Trigger Cloudinary processing immediately
-  try { await fetch(merged); } catch { /* ignore */ }
-  
-  // Wait 12 seconds to let the cloud render the video completely
-  console.log("Waiting 12 seconds for Cloudinary to finish rendering...");
-  await new Promise(resolve => setTimeout(resolve, 12000));
-  
+// Smart Polling: Force generation and wait until the video actually exists
+  let isReady = false;
+  for (let i = 1; i <= 8; i++) {
+    console.log(`Checking Cloudinary render... (Attempt ${i}/8)`);
+    try {
+      const res = await fetch(merged);
+      if (res.body) await res.body.cancel(); 
+
+      if (res.ok) {
+        console.log("✅ Video fully baked! Handing off to Facebook.");
+        isReady = true;
+        break;
+      } else {
+        console.log(`Cloudinary returned ${res.status}. Still processing...`);
+      }
+    } catch (e) {
+      // ignore network hiccups
+    }
+    await new Promise(resolve => setTimeout(resolve, 6000));
+  }
+
+  if (!isReady) {
+    console.log("⚠️ Warning: Cloudinary took too long or failed.");
+  }
+
   return merged;
 }
 
