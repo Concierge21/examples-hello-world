@@ -608,7 +608,7 @@ function pickClipFor(bodyPart: string): string {
   return list[Math.floor(Math.random() * list.length)];
 }
 
-async function buildReel(clipId: string, script: string, lines: string[]): Promise<string> {
+async function buildReel30Sec(clipId: string, script: string, lines: string[], titleText: string): Promise<string> {
   const audioBytes = await makeVoiceover(script);
   if (!audioBytes) return "";
   const audioId = await cloudinaryUpload(bytesToDataUri(audioBytes), `vo_${Date.now()}`);
@@ -617,47 +617,61 @@ async function buildReel(clipId: string, script: string, lines: string[]): Promi
   const clean = (s: string) =>
     encodeURIComponent(s.replace(/[^a-zA-Z0-9 ]/g, " ").replace(/\s+/g, " ").trim().slice(0, 55));
 
-  const span = 25 / Math.max(lines.length, 1);
-  let textChain = "";
+  // 1. Top Header Banner Layer (Styled dark teal box matching clinical branding, fixed across 30s)
+  const encodedTitle = clean(titleText);
+  const topBannerLayer = `l_text:Arial_52_bold:${encodedTitle},co_white,b_rgb:004D40CC,g_north,y_60,w_980,c_fit/fl_layer_apply/`;
+
+  // 2. Sequential Bottom Text Lines Layer (Spanned evenly across 30 seconds)
+  const span = 30 / Math.max(lines.length, 1);
+  let textChain = topBannerLayer;
+  
   lines.forEach((line, i) => {
     const start = Math.round(i * span);
     const end = Math.round((i + 1) * span);
     textChain +=
-      `l_text:Arial_62_bold:${clean(line)},co_white,b_rgb:000000B3,g_south,y_300,w_900,c_fit,so_${start},eo_${end}/fl_layer_apply/`;
+      `l_text:Arial_58_bold:${clean(line)},co_white,b_rgb:000000B3,g_south,y_350,w_900,c_fit,so_${start},eo_${end}/fl_layer_apply/`;
   });
 
   const merged =
     `https://res.cloudinary.com/${CLOUDINARY_CLOUD_NAME}/video/upload/c_fill,h_1920,w_1080/${textChain}ac_none/l_audio:${audioId}/fl_layer_apply/${clipId}.mp4`;
 
-  console.log("Weekly Reel URL:", merged);
+  console.log("30-Second Weekly Reel URL:", merged);
   try { await fetch(merged); } catch { /* ignore */ }
   return merged;
 }
+
 async function weeklyAnatomyReel() {
   const parsed = await geminiJson(
-    `Create a weekly educational Reel for Pain Rheylief House, a pain relief clinic in Tacloban City, Philippines.\n\nPick ONE body part from this list: lower back, neck, shoulders, knees, hips, wrists, upper back, ankles, jaw, elbows.\n\nRespond ONLY with valid JSON. No markdown, no backticks. Every field a non-empty string:\n{\n  "body_part": "the part you chose",\n  "pexels_keyword": "stock video search term, 2-3 words",\n  "script": "25-second English voiceover: (1) hook question about that pain, (2) what that body part actually does, (3) the most common cause of pain there, (4) ONE simple thing a person can do at home to relieve it, (5) end with: For lasting relief, visit Pain Rheylief House at The Healthy Hub, Arellano Street, Tacloban City. Open 1PM to 8PM daily. Message us to book a consultation.",\n  "text_lines": ["4 to 6 on-screen lines, max 6 words each, following the voiceover order: hook, cause, the movement, how long to hold, why it helps, invitation to message"],\n  "caption": "English caption under 150 characters naming the body part and the tip, one emoji, invites a consultation"\n}\n\nCONTENT RULES:\n- EDUCATIONAL only. NEVER mention prices, rates, packages, peso amounts, or promos.\n- Explain the anatomy in plain language a non-medical reader understands.\n- The home tip must be safe and general — stretching, posture, heat, rest. Never diagnose.\n- ENGLISH ONLY. No Tagalog, no Taglish.`,
+    `Create a weekly educational Reel for Pain Rheylief House, a pain relief clinic in Tacloban City, Philippines.\n\nPick ONE body part from this list: lower back, neck, shoulders, knees, hips, wrists, upper back, ankles, jaw, elbows.\n\nRespond ONLY with valid JSON. No markdown, no backticks. Every field a non-empty string:\n{\n  "body_part": "the part you chose",\n  "title_text": "Short uppercase header banner text, example: ANATOMY FOCUS: LOWER BACK TENSION",\n  "pexels_keyword": "stock video search term, 2-3 words, 3d medical animation",\n  "script": "Strict 30-second English voiceover: (1) hook question about that pain, (2) what that body part actually does, (3) the most common cause of pain there, (4) ONE simple home stretch tip, (5) end with: For lasting relief, visit Pain Rheylief House at The Healthy Hub, Arellano Street, Tacloban City. Open 1PM to 8PM daily. Message us for a free consultation.",\n  "text_lines": [\n    "Line 1 (Hook): Stiff or aching [body part]?",\n    "Line 2 (Cause): Sitting or stress causes deep tension",\n    "Line 3 (Movement): Try gentle cross-body stretches",\n    "Line 4 (Hold): Hold for 20 seconds to release",\n    "Line 5 (CTA): Message us for a free consultation"\n  ],\n  "caption": "English caption under 150 characters naming the body part and tip, one emoji, invites a consultation"\n}\n\nCONTENT RULES:\n- EDUCATIONAL only. NEVER mention prices, rates, packages, or promos.\n- Plain language explanation.\n- ENGLISH ONLY. No Tagalog, no Taglish.`,
   );
 
   const bodyPart = (parsed.body_part as string) || "lower back";
-  const keyword = (parsed.pexels_keyword as string) || "human anatomy medical";
+  const titleText = (parsed.title_text as string) || `ANATOMY FOCUS: ${bodyPart.toUpperCase()}`;
+  const keyword = (parsed.pexels_keyword as string) || "3d human anatomy medical";
   const script = (parsed.script as string) || "";
   const rawCaption = (parsed.caption as string) ?? "";
   const caption = rawCaption.trim() && rawCaption.trim() !== "undefined"
     ? rawCaption.trim()
     : "Your body deserves to heal. Message us for a consultation. 💆";
 
-  console.log("Weekly Reel — body part:", bodyPart, "| keyword:", keyword);
+  console.log("Weekly Reel — body part:", bodyPart, "| title:", titleText);
   if (!script) {
     console.error("Weekly Reel: no script from Gemini");
     return;
   }
 
-const rawLines = parsed.text_lines;
+  const rawLines = parsed.text_lines;
   const lines = Array.isArray(rawLines) && rawLines.length
     ? (rawLines as string[])
-    : ["Body pain slowing you down", "Try this simple stretch", "Hold for 20 seconds", "Message us for a consultation"];
+    : [
+        "Stiff or aching body parts?",
+        "Daily tension builds up over time",
+        "Try gentle controlled movements",
+        "Hold for 20 seconds to release",
+        "Message us for a free consultation"
+      ];
 
-  const voicedUrl = await buildReel(pickClipFor(bodyPart), script, lines);
+  const voicedUrl = await buildReel30Sec(pickClipFor(bodyPart), script, lines, titleText);
   if (!voicedUrl) {
     console.error("Weekly Reel: merge failed");
     return;
@@ -677,7 +691,7 @@ const rawLines = parsed.text_lines;
 
   await sendMessengerText(
     OWNER_PSID,
-    ok ? `🎬 Weekly Reel posted — ${bodyPart}\n\n📝 ${caption}` : `⚠️ Weekly Reel failed. Check logs.`,
+    ok ? `🎬 Weekly 30-Second Reel posted — ${bodyPart}\n\n📝 ${caption}` : `⚠️ Weekly Reel failed. Check logs.`,
   );
 }
 
