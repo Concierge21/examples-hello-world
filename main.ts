@@ -632,11 +632,18 @@ async function buildReel30Sec(clipId: string, script: string, lines: string[], t
       `l_text:Arial_58_bold:${clean(line)},co_white,b_rgb:000000B3,g_south,y_350,w_900,c_fit,so_${start},eo_${end}/fl_layer_apply/`;
   });
 
-  const merged =
+ const merged =
     `https://res.cloudinary.com/${CLOUDINARY_CLOUD_NAME}/video/upload/c_fill,h_1920,w_1080/${textChain}ac_none/l_audio:${audioId}/fl_layer_apply/${clipId}.mp4`;
 
   console.log("30-Second Weekly Reel URL:", merged);
+  
+  // Trigger Cloudinary processing immediately
   try { await fetch(merged); } catch { /* ignore */ }
+  
+  // Wait 12 seconds to let the cloud render the video completely
+  console.log("Waiting 12 seconds for Cloudinary to finish rendering...");
+  await new Promise(resolve => setTimeout(resolve, 12000));
+  
   return merged;
 }
 
