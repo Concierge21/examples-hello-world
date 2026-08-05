@@ -733,11 +733,14 @@ async function weeklyAnatomyReel() {
         "Message us for a free consultation"
       ];
 
-  const voicedUrl = await buildReel30Sec(pickClipFor(bodyPart), script, lines, titleText);
-  if (!voicedUrl) {
-    console.error("Weekly Reel: merge failed");
-    return;
-  }
+// Start the background process without 'await'
+  buildReel30Sec(pickClipFor(bodyPart), script, lines, titleText)
+    .then(async (voicedUrl) => {
+      if (!voicedUrl) {
+        console.error("Weekly Reel: merge failed");
+        return;
+      }
+      console.log("✅ Video ready from background thread! Proceeding to post...");
 
   const hashtags =
     "#PainRelief #MassageTherapy #PainRheyliefHouse #TaclobanCity #BodyPain #PainFree #WellnessPh";
@@ -755,7 +758,22 @@ async function weeklyAnatomyReel() {
     OWNER_PSID,
     ok ? `🎬 Weekly 30-Second Reel posted — ${bodyPart}\n\n📝 ${caption}` : `⚠️ Weekly Reel failed. Check logs.`,
   );
-}
+
+await sendMessengerText(
+      OWNER_PSID,
+      ok ? `🎥 Weekly 30-Second Reel posted - ${bodyPart}\n\n📄 ${caption}` : `⚠️ Weekly Reel failed. Check logs.`
+    );
+
+    }) // <--- PART 2 STARTS HERE (Closes the background worker)
+    .catch(err => console.error("Reel Generation Worker Error:", err));
+
+  // Send an instant response so the browser doesn't wait 30 seconds and crash
+  return new Response(JSON.stringify({ status: "Processing Reel in background! Check your logs." }), {
+    status: 202,
+    headers: { "Content-Type": "application/json" }
+  });
+} // <--- This is that original closing bracket (was previously on line 761)
+
 
 Deno.cron("weekly anatomy reel", "0 1 * * 1", weeklyAnatomyReel);
 Deno.serve(async (req: Request) => {
