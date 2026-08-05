@@ -608,6 +608,34 @@ function pickClipFor(bodyPart: string): string {
   return list[Math.floor(Math.random() * list.length)];
 }
 
+// --- 1. The Pexels Video Discovery Tool ---
+async function fetchStockVideo(keyword: string): Promise<string> {
+  try {
+    const res = await fetch(
+      `https://api.pexels.com/v1/videos/search?query=${encodeURIComponent(keyword)}&per_page=5&orientation=portrait`,
+      {
+        headers: {
+          Authorization: "563492ad6f91700001000001bc4fb99285744abfa2b02888c3a17e08",
+        },
+      }
+    );
+    if (!res.ok) return "";
+    const data = await res.json();
+    
+    const video = data.videos?.[0];
+    if (!video) return "";
+    
+    const file = video.video_files.find(
+      (f: any) => f.width >= 720 && f.width < f.height
+    ) || video.video_files[0];
+    
+    return file?.link || "";
+  } catch {
+    return "";
+  }
+}
+
+// --- 2. The Updated Automated Video Engine ---
 async function buildReel30Sec(clipId: string, script: string, lines: string[], titleText: string): Promise<string> {
   const audioBytes = await makeVoiceover(script);
   if (!audioBytes) return "";
@@ -617,11 +645,20 @@ async function buildReel30Sec(clipId: string, script: string, lines: string[], t
   const clean = (s: string) =>
     encodeURIComponent(s.replace(/[^a-zA-Z0-9 ]/g, " ").replace(/\s+/g, " ").trim().slice(0, 55));
 
-  // 1. Top Header Banner Layer (Styled dark teal box matching clinical branding, fixed across 30s)
+  console.log(`Searching for automated video assets matching: ${clipId}...`);
+  // Automatically search stock videos for the target topic (e.g., "neck massage therapy")
+  let videoUrl = await fetchStockVideo(`${clipId} massage therapy stretching`);
+  
+  // High-quality backup clinical canvas link if the specific lookup fails
+  if (!videoUrl) {
+    videoUrl = "https://player.vimeo.com/external/459389137.sd.mp4?s=96ae6ca7f34c6e6eb1c784e27f078a3d5272a275&profile_id=165&oauth2_token_id=57447761";
+  }
+  
+  const encodedVideoUrl = encodeURIComponent(videoUrl);
+
   const encodedTitle = clean(titleText);
   const topBannerLayer = `l_text:Arial_52_bold:${encodedTitle},co_white,b_rgb:004D40CC,g_north,y_60,w_980,c_fit/fl_layer_apply/`;
 
-  // 2. Sequential Bottom Text Lines Layer (Spanned evenly across 30 seconds)
   const span = 30 / Math.max(lines.length, 1);
   let textChain = topBannerLayer;
   
@@ -632,33 +669,34 @@ async function buildReel30Sec(clipId: string, script: string, lines: string[], t
       `l_text:Arial_58_bold:${clean(line)},co_white,b_rgb:000000B3,g_south,y_350,w_900,c_fit,so_${start},eo_${end}/fl_layer_apply/`;
   });
 
-const merged =
-    `https://res.cloudinary.com/${CLOUDINARY_CLOUD_NAME}/video/upload/c_fill,h_1920,w_1080/${textChain}l_video:${audioId}/fl_layer_apply/${clipId}.mp4`;
-  console.log("30-Second Weekly Reel URL:", merged);
+  // Notice the '/fetch/' parameter—this tells Cloudinary to grab the external stock video link on the fly!
+  const merged =
+    `https://res.cloudinary.com/${CLOUDINARY_CLOUD_NAME}/video/upload/c_fill,h_1920,w_1080,du_30/${textChain}l_video:${audioId}/fl_layer_apply/fetch/${encodedVideoUrl}`;
+
+  console.log("30-Second Dynamic Reel URL:", merged);
   
-// Smart Polling: Force generation and wait until the video actually exists
   let isReady = false;
-  for (let i = 1; i <= 8; i++) {
-    console.log(`Checking Cloudinary render... (Attempt ${i}/8)`);
+  for (let i = 1; i <= 15; i++) {
+    console.log(`Checking Cloudinary video compilation... (Attempt ${i}/15)`);
     try {
       const res = await fetch(merged);
       if (res.body) await res.body.cancel(); 
 
       if (res.ok) {
-        console.log("✅ Video fully baked! Handing off to Facebook.");
+        console.log("✅ Reel fully compiled! Ready for Facebook deployment.");
         isReady = true;
         break;
       } else {
-        console.log(`Cloudinary returned ${res.status}. Still processing...`);
+        console.log(`Cloudinary engine status: ${res.status}. Stitched video baking...`);
       }
     } catch (e) {
-      // ignore network hiccups
+      // Ignore network dropouts
     }
     await new Promise(resolve => setTimeout(resolve, 6000));
   }
 
   if (!isReady) {
-    console.log("⚠️ Warning: Cloudinary took too long or failed.");
+    console.log("⚠️ Warning: Cloudinary took too long to stitch layers.");
   }
 
   return merged;
