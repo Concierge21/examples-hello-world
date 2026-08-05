@@ -744,21 +744,21 @@ async function weeklyAnatomyReel() {
 
   // Download and open the sample video directly on your desktop for review
       try {
-        const videoRes = await fetch(voicedUrl);
-        const videoBuffer = new Uint8Array(await videoRes.arrayBuffer());
+      const videoRes = await fetch(voicedUrl);
+      const videoBuffer = new Uint8Array(await videoRes.arrayBuffer());
 
-        const desktopPath = `${Deno.env.get("USERPROFILE") || "C:\\Users\\partn"}\\Desktop\\sample_reel.mp4`;
-        await Deno.writeFile(desktopPath, videoBuffer);
-        console.log(`📁 Sample reel saved to: ${desktopPath}`);
+const desktopPath = `${Deno.env.get("USERPROFILE") || "C:\\Users\\partn"}\\Desktop\\sample_reel.mp4`;
+      await Deno.writeFile(desktopPath, videoBuffer);
+      console.log(`📁 Sample reel saved to: ${desktopPath}`);
 
-        const command = new Deno.Command("cmd", {
-          args: ["/c", "start", "", desktopPath],
-        });
-        await command.output();
-        console.log("🎬 Sample video opened on desktop!");
-      } catch (err) {
-        console.error("Error opening sample video on desktop:", err);
-      }
+      const command = new Deno.Command("cmd", {
+        args: ["/c", "start", "", desktopPath],
+      });
+      await command.output();
+      console.log("🎬 Sample video opened on desktop!");
+    } catch (err) {
+      console.error("Error opening sample video on desktop:", err);
+    }
 
 
     }) // <--- PART 2 STARTS HERE (Closes the background worker)
