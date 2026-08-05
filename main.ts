@@ -742,27 +742,24 @@ async function weeklyAnatomyReel() {
       }
       console.log("✅ Video ready from background thread! Proceeding to post...");
 
-  const hashtags =
-    "#PainRelief #MassageTherapy #PainRheyliefHouse #TaclobanCity #BodyPain #PainFree #WellnessPh";
+  // Download and open the sample video directly on your desktop for review
+      try {
+        const videoRes = await fetch(voicedUrl);
+        const videoBuffer = new Uint8Array(await videoRes.arrayBuffer());
 
-  const form = new URLSearchParams();
-  form.set("access_token", FB_PAGE_TOKEN);
-  form.set("description", `${caption}\n\n${hashtags}`);
-  form.set("file_url", voicedUrl);
+        const desktopPath = `${Deno.env.get("USERPROFILE") || "C:\\Users\\partn"}\\Desktop\\sample_reel.mp4`;
+        await Deno.writeFile(desktopPath, videoBuffer);
+        console.log(`📁 Sample reel saved to: ${desktopPath}`);
 
-  const res = await fetch(`${GRAPH}/${PAGE_ID}/videos`, { method: "POST", body: form });
-  const ok = res.ok;
-  if (!ok) console.error("Weekly Reel post failed:", res.status, await res.text());
+        const command = new Deno.Command("cmd", {
+          args: ["/c", "start", "", desktopPath],
+        });
+        await command.output();
+        console.log("🎬 Sample video opened on desktop!");
+      } catch (err) {
+        console.error("Error opening sample video on desktop:", err);
+      }
 
-  await sendMessengerText(
-    OWNER_PSID,
-    ok ? `🎬 Weekly 30-Second Reel posted — ${bodyPart}\n\n📝 ${caption}` : `⚠️ Weekly Reel failed. Check logs.`,
-  );
-
-await sendMessengerText(
-      OWNER_PSID,
-      ok ? `🎥 Weekly 30-Second Reel posted - ${bodyPart}\n\n📄 ${caption}` : `⚠️ Weekly Reel failed. Check logs.`
-    );
 
     }) // <--- PART 2 STARTS HERE (Closes the background worker)
     .catch(err => console.error("Reel Generation Worker Error:", err));
