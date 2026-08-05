@@ -633,8 +633,7 @@ async function buildReel30Sec(clipId: string, script: string, lines: string[], t
   });
 
  const merged =
-    `https://res.cloudinary.com/${CLOUDINARY_CLOUD_NAME}/video/upload/c_fill,h_1920,w_1080/${textChain}ac_none/l_audio:${audioId}/fl_layer_apply/${clipId}.mp4`;
-
+`https://res.cloudinary.com/${CLOUDINARY_CLOUD_NAME}/video/upload/c_fill,h_1920,w_1080/${textChain}l_audio:${audioId}/fl_layer_apply/${clipId}.mp4`;
   console.log("30-Second Weekly Reel URL:", merged);
   
   // Trigger Cloudinary processing immediately
