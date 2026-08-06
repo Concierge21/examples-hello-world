@@ -391,24 +391,15 @@ Deno.serve(async (req: Request) => {
     return new Response("Pain Rheylief automation server is running 🌿", { status: 200 });
   }
   
-  if (url.pathname === "/test-owner") {
-    const res = await fetch(
-      `https://graph.facebook.com/v21.0/me/messages?access_token=${Deno.env.get("FB_PAGE_TOKEN")}`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          recipient: { id: Deno.env.get("OWNER_PSID") },
-          messaging_type: "RESPONSE",
-          message: { text: "✅ Test alert from Pain RHEYlief House automation. If you see this, notifications are working." },
-        }),
-      }
+if (url.pathname === "/test-owner") {
+    const ownerId = Deno.env.get("OWNER_PSID") ?? "";
+    const success = await sendMessengerText(
+      ownerId, 
+      "✅ Test alert from Pain RHEYlief House automation. The 24-hour bypass is working!"
     );
-    const data = await res.json();
-    return new Response(JSON.stringify(data, null, 2), {
-      headers: { "Content-Type": "application/json" },
-    });
+    return new Response(success ? "Test alert sent successfully!" : "Failed to send alert. Check Deno logs.");
   }
+  
   
   if (url.pathname === "/test-reminder") {
     await dailyClientReminder();
