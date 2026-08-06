@@ -36,10 +36,21 @@ const GRAPH = "https://graph.facebook.com/v19.0";
 
 async function sendMessengerText(recipientId: string, text: string): Promise<boolean> {
   try {
+    const payload: Record<string, any> = {
+      recipient: { id: recipientId },
+      message: { text }
+    };
+
+    // Bypass Facebook's 24-hour rule ONLY for the owner's notifications
+    if (recipientId === OWNER_PSID) {
+      payload.messaging_type = "MESSAGE_TAG";
+      payload.tag = "CONFIRMED_EVENT_UPDATE";
+    }
+
     const res = await fetch(`${GRAPH}/me/messages?access_token=${FB_PAGE_TOKEN}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ recipient: { id: recipientId }, message: { text } }),
+      body: JSON.stringify(payload),
     });
     if (!res.ok) console.error("Messenger send failed:", res.status, await res.text());
     return res.ok;
