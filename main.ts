@@ -1,37 +1,46 @@
 // ============================================================
 // Pain Rheylief House — Unified Automation Server (Deno Deploy)
-// Single Facebook webhook that routes all 5 workflows.
+// Single Facebook webhook that routes the workflows.
 //
 // W1: AI Chatbot (Groq + Deno KV memory + booking → Sheets + owner DM)
 // W2: Daily 12PM Manila client reminder to owner (Deno.cron)
 // W3: Monthly follow-up to all leads, 1st @ 10AM Manila (Deno.cron)
 // W4: BUSY/OPEN schedule blocking via page posts (Gemini date parse)
-// W5: New page post → Gemini script/caption/hashtags → Pexels video
-//     → auto-posts a Reel via public file_url + DMs owner the
-//     voiceover kit. (FFmpeg merging/voiceover baking is not possible
-//     on serverless — this posts a single stock clip instead.)
+// W6: Weekly educational Reel — Gemini script + on-screen lines,
+//     OpenAI TTS voiceover, Cloudinary text + audio overlay,
+//     auto-posted to the Page. Mondays 9AM Manila.
+//
+// NOTE: the old "new page post → auto Reel" workflow has been removed.
+// Page posts now only trigger BUSY/OPEN schedule handling.
 //
 // ENVIRONMENT VARIABLES (Deno Deploy → Project → Settings → Env):
-//   FB_PAGE_TOKEN     Facebook Page access token
-//   GROQ_API_KEY      Groq API key (gsk_...)
-//   GEMINI_API_KEY    Google Gemini API key
-//   PEXELS_API_KEY    Pexels API key
-//   VERIFY_TOKEN      Webhook verify token (painrheylief2026)
-//   SHEETS_LEADS_URL  Apps Script URL for saving bookings (W1)
-//   SHEETS_DATA_URL   Apps Script URL for reading rows / date blocks (W2-W4)
-//   OWNER_PSID        Owner's page-scoped ID (7386353388108184)
-//   PAGE_ID           Facebook Page ID (376260662410328)
+//   FB_PAGE_TOKEN            Facebook Page access token
+//   GROQ_API_KEY             Groq API key (gsk_...)
+//   GEMINI_API_KEY           Google Gemini API key
+//   OPENAI_API_KEY           OpenAI API key (TTS)
+//   CLOUDINARY_CLOUD_NAME    Cloudinary cloud name
+//   CLOUDINARY_API_KEY       Cloudinary API key
+//   CLOUDINARY_API_SECRET    Cloudinary API secret
+//   VERIFY_TOKEN             Webhook verify token (painrheylief2026)
+//   SHEETS_LEADS_URL         Apps Script URL for saving bookings (W1)
+//   SHEETS_DATA_URL          Apps Script URL for reading rows / date blocks
+//   OWNER_PSID               Owner's page-scoped ID (7386353388108184)
+//   PAGE_ID                  Facebook Page ID (376260662410328)
 // ============================================================
 
 const FB_PAGE_TOKEN = Deno.env.get("FB_PAGE_TOKEN") ?? "";
 const GROQ_API_KEY = Deno.env.get("GROQ_API_KEY") ?? "";
 const GEMINI_API_KEY = Deno.env.get("GEMINI_API_KEY") ?? "";
-const PEXELS_API_KEY = Deno.env.get("PEXELS_API_KEY") ?? "";
 const VERIFY_TOKEN = Deno.env.get("VERIFY_TOKEN") ?? "painrheylief2026";
 const SHEETS_LEADS_URL = Deno.env.get("SHEETS_LEADS_URL") ?? "";
 const SHEETS_DATA_URL = Deno.env.get("SHEETS_DATA_URL") ?? "";
 const OWNER_PSID = Deno.env.get("OWNER_PSID") ?? "7386353388108184";
 const PAGE_ID = Deno.env.get("PAGE_ID") ?? "376260662410328";
+
+const CLOUDINARY_CLOUD_NAME = Deno.env.get("CLOUDINARY_CLOUD_NAME") ?? "";
+const CLOUDINARY_API_KEY = Deno.env.get("CLOUDINARY_API_KEY") ?? "";
+const CLOUDINARY_API_SECRET = Deno.env.get("CLOUDINARY_API_SECRET") ?? "";
+const OPENAI_API_KEY = Deno.env.get("OPENAI_API_KEY") ?? "";
 
 const kv = await Deno.openKv();
 const GRAPH = "https://graph.facebook.com/v19.0";
@@ -138,6 +147,7 @@ CRITICAL BOOKING RULE:
 Only add the booking tag when you have ALL FOUR of these from the client: their real name, the service, the date, and the time. If any one is missing, ask for it and do NOT add the tag. Never invent, guess, or use a placeholder for the name — never write things like "Hindi pa nakumpirma", "unknown", "client", or "N/A". The name must be one the client actually typed.
 
 When and only when all four are confirmed, add this exact tag at the end of your reply: [BOOKING_CONFIRMED: name=NAME, service=SERVICE, date=DATE, time=TIME]`;
+
 type ChatMsg = { role: "user" | "assistant"; content: string };
 
 async function getHistory(senderId: string): Promise<ChatMsg[]> {
@@ -210,7 +220,6 @@ async function handleChatMessage(senderId: string, messageText: string) {
       }).catch((e) => console.error("Sheets save failed:", e));
     }
 
-    // Best-effort owner alert (may fail outside the 24h window — non-fatal)
     await sendMessengerText(
       OWNER_PSID,
       `🌿 New Booking!\n👤 ${name}\n💆 ${service}\n📅 ${date}\n🕒 ${time}`,
@@ -247,112 +256,6 @@ async function handleScheduleCommand(postMessage: string) {
   await sendMessengerText(
     OWNER_PSID,
     `✅ Schedule updated!\n${action === "BUSY" ? "🔴 BLOCKED" : "🟢 OPENED"}: ${dateText}\n\nThe chatbot will automatically handle bookings for these dates.`,
-  );
-}
-
-// ------------------------------------------------------------
-// Workflow 5 — New post → auto Reel (single clip) + owner kit
-// ------------------------------------------------------------
-
-async function pickPexelsVideoUrl(keyword: string): Promise<string> {
-  if (!PEXELS_API_KEY) return "";
-  try {
-    const res = await fetch(
-      `https://api.pexels.com/videos/search?query=${encodeURIComponent(keyword)}&per_page=3&orientation=portrait&size=medium`,
-      { headers: { Authorization: PEXELS_API_KEY } },
-    );
-    if (!res.ok) {
-      console.error("Pexels error:", res.status, await res.text());
-      return "";
-    }
-    const data = await res.json();
-    const videos = data.videos ?? [];
-    for (const v of videos) {
-      const files = v.video_files ?? [];
-      const portraitHd = files.find((f: { height: number; width: number; quality: string }) =>
-        f.height > f.width && f.quality === "hd"
-      );
-      const anyPortrait = files.find((f: { height: number; width: number }) =>
-        f.height > f.width
-      );
-      const chosen = portraitHd || anyPortrait || files[0];
-      if (chosen?.link) return chosen.link as string;
-    }
-    return "";
-  } catch (e) {
-    console.error("Pexels request error:", e);
-    return "";
-  }
-}
-async function pickPexelsVideoUrls(keyword: string, count: number): Promise<string[]> {
-  if (!PEXELS_API_KEY) return [];
-  try {
-    const res = await fetch(
-      `https://api.pexels.com/videos/search?query=${encodeURIComponent(keyword)}&per_page=15&orientation=portrait&min_duration=8`,
-      { headers: { Authorization: PEXELS_API_KEY } },
-    );
-    if (!res.ok) return [];
-    const data = await res.json();
-    const out: string[] = [];
-    for (const v of data.videos ?? []) {
-      const files = v.video_files ?? [];
-      const pick = files.find((f: { height: number; width: number; quality: string }) =>
-        f.height > f.width && f.quality === "hd"
-      ) || files.find((f: { height: number; width: number }) => f.height > f.width);
-      if (pick?.link) out.push(pick.link);
-      if (out.length >= count) break;
-    }
-    return out;
-  } catch (e) {
-    console.error("Pexels multi error:", e);
-    return [];
-  }
-}
-
-async function handleNewPost(postMessage: string) {
-  const parsed = await geminiJson(
-    `You are a content creator for Pain Rheylief House, a massage and pain relief therapy clinic in Tacloban City, Philippines.\n\nBased on this Facebook post: '${postMessage}'\n\nRespond ONLY with a valid JSON object (no markdown, no backticks, no extra text):\n{\n  "pexels_keyword": "short 2-3 word search term for anatomy or pain relief video (example: back pain massage, neck pain relief, spine anatomy)",\n  "script": "Write a 30-second educational voiceover script about the pain topic in this post. Structure: First 5 seconds hook question. Next 15 seconds explain the pain cause and one simple tip to relieve it. Last 10 seconds say: For professional pain relief, visit Pain Rheylief House at The Healthy Hub, Arellano Street, Tacloban City. Open 1PM to 8PM daily. Message us on Facebook to book your session today!",\n  "caption": "Engaging Facebook Reel caption under 150 characters with one relevant emoji",\n  "hashtags": "#PainRelief #MassageTherapy #PainRheyliefHouse #TaclobanCity #BackPain #MassagePh #PainManagement #DeepTissue #HilotPh #NaturalHealing #BodyPain #MassageHeals #TaclobanMassage #PainFree #WellnessPh"\n}`,
-  );
-
-  const keyword = (parsed.pexels_keyword as string) ?? "massage therapy pain relief";
-  console.log("W5 fired — full parsed:", JSON.stringify(parsed).slice(0, 300));
-  const script = (parsed.script as string) ??
-    "Is your body in pain? At Pain Rheylief House, our expert therapists provide professional pain relief treatments. Visit us at The Healthy Hub, Arellano Street, Tacloban City. Open 1PM to 8PM daily. Message us on Facebook to book your session today!";
-  const caption = (parsed.caption as string) ??
-    "Professional pain relief is just one session away! 💆";
-  const hashtags = (parsed.hashtags as string) ??
-    "#PainRelief #MassageTherapy #PainRheyliefHouse #TaclobanCity";
-
-  // Try to auto-post a Reel using a public Pexels video URL
-  const videoUrl = await pickPexelsVideoUrl(keyword);
-  let posted = false;
-
-  if (videoUrl) {
-    try {
-      const form = new URLSearchParams();
-      form.set("access_token", FB_PAGE_TOKEN);
-      form.set("description", `${caption} ${hashtags}`);
-      form.set("file_url", videoUrl);
-
-      const res = await fetch(`${GRAPH}/${PAGE_ID}/videos`, {
-        method: "POST",
-        body: form,
-      });
-      posted = res.ok;
-      if (!res.ok) console.error("Reel post failed:", res.status, await res.text());
-    } catch (e) {
-      console.error("Reel post error:", e);
-    }
-  }
-
-  // Always DM the owner the full content kit
-  const statusLine = posted
-    ? "✅ A video Reel was auto-posted to the Page with this caption!"
-    : "⚠️ Auto-post didn't go through — you can post manually with this kit:";
-
-  await sendMessengerText(
-    OWNER_PSID,
-    `🎬 Reel Kit for your new post!\n${statusLine}\n\n📝 CAPTION:\n${caption}\n\n🏷️ HASHTAGS:\n${hashtags}\n\n🎙️ VOICEOVER SCRIPT (for a custom version later):\n${script}`,
   );
 }
 
@@ -423,71 +326,8 @@ Deno.cron("monthly lead followup", "0 2 1 * *", async () => {
 });
 
 // ------------------------------------------------------------
-// Main webhook server — single endpoint, routes by payload
+// Media pipeline — TTS + Cloudinary
 // ------------------------------------------------------------
-
-async function processEvents(body: Record<string, unknown>) {
-  console.log("RAW PAYLOAD:", JSON.stringify(body).slice(0, 500));
-  const entries = (body.entry as Record<string, unknown>[]) ?? [];
-  for (const entry of entries) {
-    // ---- Messenger events → Workflow 1 ----
-    const messagingEvents = (entry.messaging as Record<string, unknown>[]) ?? [];
-    for (const ev of messagingEvents) {
-      const message = ev.message as Record<string, unknown> | undefined;
-      const sender = ev.sender as Record<string, unknown> | undefined;
-      if (!message || message.is_echo) continue;
-
-      const senderId = String(sender?.id ?? "");
-      const messageText = String(message.text ?? "");
-      const mid = String(message.mid ?? "");
-
-      if (!senderId || senderId === PAGE_ID || !messageText) continue;
-      if (mid && (await seenBefore(`mid_${mid}`, 60 * 60 * 1000))) continue;
-
-      await handleChatMessage(senderId, messageText);
-    }
-
-    // ---- Feed events → Workflow 4 or 5 ----
-    const changes = (entry.changes as Record<string, unknown>[]) ?? [];
-    for (const change of changes) {
-      if (change.field !== "feed") continue;
-      const value = change.value as Record<string, unknown> | undefined;
-      if (!value) continue;
-
-      // Only NEW posts — skip edits, deletes, likes, comments, reactions
-      const verb = String(value.verb ?? "");
-      const item = String(value.item ?? "");
-
-      // Accept "add" or "publish" — Facebook uses both for new posts
-      // Also accept empty verb since some post types omit it
-      const blockedVerbs = ["edited", "delete", "remove", "unlike", "hide"];
-      if (blockedVerbs.includes(verb)) continue;
-
-      // Block comments, likes, reactions — allow posts, shares, photos, videos, empty
-      const blockedItems = ["comment", "like", "reaction", "friendship", "mention"];
-      if (item && blockedItems.includes(item)) continue;
-
-      const postMessage = String(value.message ?? value.story ?? "");
-      if (!postMessage) continue;
-
-      const postId = String(value.post_id ?? "");
-      const dedupKey = postId || String(value.message ?? "").slice(0, 50);
-      if (dedupKey && (await seenBefore(`feed_${dedupKey}`, 24 * 60 * 60 * 1000))) continue;
-      if (await seenBefore(`feed_rate_limit`, 5 * 60 * 1000)) continue;
-      const upper = postMessage.toUpperCase();
-      if (upper.startsWith("BUSY") || upper.startsWith("OPEN")) {
-        await handleScheduleCommand(postMessage); // Workflow 4
-      } else {
-        await handleNewPost(postMessage); // Workflow 5
-      }
-    }
-  }
-}
-
-const CLOUDINARY_CLOUD_NAME = Deno.env.get("CLOUDINARY_CLOUD_NAME") ?? "";
-const CLOUDINARY_API_KEY = Deno.env.get("CLOUDINARY_API_KEY") ?? "";
-const CLOUDINARY_API_SECRET = Deno.env.get("CLOUDINARY_API_SECRET") ?? "";
-const OPENAI_API_KEY = Deno.env.get("OPENAI_API_KEY") ?? "";
 
 async function sha1Hex(input: string): Promise<string> {
   const buf = await crypto.subtle.digest("SHA-1", new TextEncoder().encode(input));
@@ -557,38 +397,10 @@ function bytesToDataUri(bytes: Uint8Array): string {
   return `data:audio/mp3;base64,${btoa(binary)}`;
 }
 
-async function buildVoicedVideo(videoUrls: string[], script: string): Promise<string> {
-  const stamp = Date.now();
-  const audioBytes = await makeVoiceover(script);
-  if (!audioBytes) return "";
+// ------------------------------------------------------------
+// Workflow 6 — Weekly educational Reel (Mondays 9AM Manila = 01:00 UTC)
+// ------------------------------------------------------------
 
-  const audioId = await cloudinaryUpload(bytesToDataUri(audioBytes), `vo_${stamp}`);
-  if (!audioId) return "";
-
-  const ids: string[] = [];
-  for (let i = 0; i < videoUrls.length; i++) {
-    const id = await cloudinaryUpload(videoUrls[i], `clip_${stamp}_${i}`);
-    if (id) ids.push(id);
-  }
-  if (ids.length === 0) return "";
-  console.log("Splice: uploaded", ids.length, "clips:", ids.join(", "));
-
-  const SIZE = "c_fill,h_1920,w_1080";
-  let chain = `${SIZE}/`;
-  for (let i = 1; i < ids.length; i++) {
-    chain += `l_video:${ids[i]}/${SIZE}/fl_splice,fl_layer_apply/`;
-  }
-  chain += `ac_none/l_audio:${audioId}/fl_layer_apply/`;
-
-  const merged =
-    `https://res.cloudinary.com/${CLOUDINARY_CLOUD_NAME}/video/upload/${chain}${ids[0]}.mp4`;
-
-  try {
-    await fetch(merged, { method: "GET" });
-  } catch { /* ignore */ }
-
-  return merged;
-}
 const ANATOMY_CLIPS: Record<string, string[]> = {
   "lower back": ["anat_back_1", "anat_back_2"],
   "upper back": ["anat_back_1", "anat_back_2"],
@@ -633,26 +445,26 @@ async function buildReel(clipId: string, script: string, lines: string[]): Promi
   try { await fetch(merged); } catch { /* ignore */ }
   return merged;
 }
+
 async function weeklyAnatomyReel() {
   const parsed = await geminiJson(
-    `Create a weekly educational Reel for Pain Rheylief House, a pain relief clinic in Tacloban City, Philippines.\n\nPick ONE body part from this list: lower back, neck, shoulders, knees, hips, wrists, upper back, ankles, jaw, elbows.\n\nRespond ONLY with valid JSON. No markdown, no backticks. Every field a non-empty string:\n{\n  "body_part": "the part you chose",\n  "pexels_keyword": "stock video search term, 2-3 words",\n  "script": "25-second English voiceover: (1) hook question about that pain, (2) what that body part actually does, (3) the most common cause of pain there, (4) ONE simple thing a person can do at home to relieve it, (5) end with: For lasting relief, visit Pain Rheylief House at The Healthy Hub, Arellano Street, Tacloban City. Open 1PM to 8PM daily. Message us to book a consultation.",\n  "text_lines": ["4 to 6 on-screen lines, max 6 words each, following the voiceover order: hook, cause, the movement, how long to hold, why it helps, invitation to message"],\n  "caption": "English caption under 150 characters naming the body part and the tip, one emoji, invites a consultation"\n}\n\nCONTENT RULES:\n- EDUCATIONAL only. NEVER mention prices, rates, packages, peso amounts, or promos.\n- Explain the anatomy in plain language a non-medical reader understands.\n- The home tip must be safe and general — stretching, posture, heat, rest. Never diagnose.\n- ENGLISH ONLY. No Tagalog, no Taglish.`,
+    `Create a weekly educational Reel for Pain Rheylief House, a pain relief clinic in Tacloban City, Philippines.\n\nPick ONE body part from this list: lower back, neck, shoulders, knees, hips, wrists, upper back, ankles, jaw, elbows.\n\nRespond ONLY with valid JSON. No markdown, no backticks. Every field a non-empty string:\n{\n  "body_part": "the part you chose",\n  "script": "25-second English voiceover: (1) hook question about that pain, (2) what that body part actually does, (3) the most common cause of pain there, (4) ONE simple stretch or movement a person can do at home to relieve it, described step by step with how long to hold it, (5) end with: For lasting relief, visit Pain Rheylief House at The Healthy Hub, Arellano Street, Tacloban City. Open 1PM to 8PM daily. Message us to book a consultation.",\n  "text_lines": ["4 to 6 on-screen lines, max 6 words each, following the voiceover order: hook, cause, the movement, how long to hold, why it helps, invitation to message"],\n  "caption": "English caption under 150 characters naming the body part and the tip, one emoji, invites a consultation"\n}\n\nCONTENT RULES:\n- EDUCATIONAL only. NEVER mention prices, rates, packages, peso amounts, or promos.\n- Explain the anatomy in plain language a non-medical reader understands.\n- The movement must be safe and general — stretching, posture, heat, rest. Never diagnose.\n- ENGLISH ONLY. No Tagalog, no Taglish.`,
   );
 
   const bodyPart = (parsed.body_part as string) || "lower back";
-  const keyword = (parsed.pexels_keyword as string) || "human anatomy medical";
   const script = (parsed.script as string) || "";
   const rawCaption = (parsed.caption as string) ?? "";
   const caption = rawCaption.trim() && rawCaption.trim() !== "undefined"
     ? rawCaption.trim()
     : "Your body deserves to heal. Message us for a consultation. 💆";
 
-  console.log("Weekly Reel — body part:", bodyPart, "| keyword:", keyword);
+  console.log("Weekly Reel — body part:", bodyPart);
   if (!script) {
     console.error("Weekly Reel: no script from Gemini");
     return;
   }
 
-const rawLines = parsed.text_lines;
+  const rawLines = parsed.text_lines;
   const lines = Array.isArray(rawLines) && rawLines.length
     ? (rawLines as string[])
     : ["Body pain slowing you down", "Try this simple stretch", "Hold for 20 seconds", "Message us for a consultation"];
@@ -682,63 +494,107 @@ const rawLines = parsed.text_lines;
 }
 
 Deno.cron("weekly anatomy reel", "0 1 * * 1", weeklyAnatomyReel);
+
+// ------------------------------------------------------------
+// Main webhook server — single endpoint, routes by payload
+// ------------------------------------------------------------
+
+async function processEvents(body: Record<string, unknown>) {
+  console.log("RAW PAYLOAD:", JSON.stringify(body).slice(0, 500));
+  const entries = (body.entry as Record<string, unknown>[]) ?? [];
+  for (const entry of entries) {
+    // ---- Messenger events → Workflow 1 ----
+    const messagingEvents = (entry.messaging as Record<string, unknown>[]) ?? [];
+    for (const ev of messagingEvents) {
+      const message = ev.message as Record<string, unknown> | undefined;
+      const sender = ev.sender as Record<string, unknown> | undefined;
+      if (!message || message.is_echo) continue;
+
+      const senderId = String(sender?.id ?? "");
+      const messageText = String(message.text ?? "");
+      const mid = String(message.mid ?? "");
+
+      if (!senderId || senderId === PAGE_ID || !messageText) continue;
+      if (mid && (await seenBefore(`mid_${mid}`, 60 * 60 * 1000))) continue;
+
+      await handleChatMessage(senderId, messageText);
+    }
+
+    // ---- Feed events → Workflow 4 only (BUSY / OPEN) ----
+    const changes = (entry.changes as Record<string, unknown>[]) ?? [];
+    for (const change of changes) {
+      if (change.field !== "feed") continue;
+      const value = change.value as Record<string, unknown> | undefined;
+      if (!value) continue;
+
+      const verb = String(value.verb ?? "");
+      const item = String(value.item ?? "");
+
+      const blockedVerbs = ["edited", "delete", "remove", "unlike", "hide"];
+      if (blockedVerbs.includes(verb)) continue;
+
+      const blockedItems = ["comment", "like", "reaction", "friendship", "mention"];
+      if (item && blockedItems.includes(item)) continue;
+
+      const postMessage = String(value.message ?? value.story ?? "");
+      if (!postMessage) continue;
+
+      // Only BUSY / OPEN posts do anything. All other posts are ignored.
+      const upper = postMessage.toUpperCase();
+      if (!upper.startsWith("BUSY") && !upper.startsWith("OPEN")) continue;
+
+      const postId = String(value.post_id ?? "");
+      const dedupKey = postId || postMessage.slice(0, 50);
+      if (dedupKey && (await seenBefore(`feed_${dedupKey}`, 24 * 60 * 60 * 1000))) continue;
+
+      await handleScheduleCommand(postMessage);
+    }
+  }
+}
+
 Deno.serve(async (req: Request) => {
   const url = new URL(req.url);
 
   if (url.pathname === "/" && req.method === "GET") {
     return new Response("Pain Rheylief automation server is running 🌿", { status: 200 });
   }
-if (url.pathname === "/test-owner") {
+
+  if (url.pathname === "/test-owner") {
     const res = await fetch(
-      `https://graph.facebook.com/v21.0/me/messages?access_token=${Deno.env.get("FB_PAGE_TOKEN")}`,
+      `${GRAPH}/me/messages?access_token=${FB_PAGE_TOKEN}`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          recipient: { id: Deno.env.get("OWNER_PSID") },
+          recipient: { id: OWNER_PSID },
           messaging_type: "RESPONSE",
           message: { text: "✅ Test alert from Pain RHEYlief House automation. If you see this, notifications are working." },
         }),
-      }
+      },
     );
     const data = await res.json();
     return new Response(JSON.stringify(data, null, 2), {
       headers: { "Content-Type": "application/json" },
     });
   }
-if (url.pathname === "/test-reminder") {
+
+  if (url.pathname === "/test-reminder") {
     await dailyClientReminder();
     return new Response("Reminder fired — check Messenger and Deno logs");
   }
-    if (url.pathname === "/reset-chat") {
+
+  if (url.pathname === "/reset-chat") {
     const sid = url.searchParams.get("id") ?? "";
     if (!sid) return new Response("Missing ?id=");
     await kv.delete(["chat_history", sid]);
     return new Response(`Chat history cleared for ${sid}`);
   }
-  if (url.pathname === "/test-cloudinary") {
-    const clip = await pickPexelsVideoUrl("spine anatomy 3d");
-    if (!clip) return new Response("No Pexels clip found");
-    const id = await cloudinaryUpload(clip, `test_${Date.now()}`);
-    if (!id) return new Response("Cloudinary upload FAILED — check Deno logs");
-    return new Response(
-      `Upload OK\npublic_id: ${id}\nhttps://res.cloudinary.com/${CLOUDINARY_CLOUD_NAME}/video/upload/${id}.mp4`,
-    );
-  }
-  if (url.pathname === "/test-voiced") {
-    const clips = await pickPexelsVideoUrls("spine anatomy 3d", 3);
-    if (clips.length === 0) return new Response("No Pexels clips found");
-    const merged = await buildVoicedVideo(
-      clips,
-      "Your spine carries you through every movement of your day. When the muscles around it tighten, pain follows. For professional pain relief, visit Pain Rheylief House at The Healthy Hub, Arellano Street, Tacloban City. Open 1PM to 8PM daily.",
-    );
-    if (!merged) return new Response("Merge FAILED — check Deno logs");
-    return new Response(`Merged OK\n${merged}`);
-  }
+
   if (url.pathname === "/test-weekly") {
     await weeklyAnatomyReel();
     return new Response("Weekly Reel fired — check the Page and logs");
   }
+
   if (url.pathname !== "/webhook") {
     return new Response("Not found", { status: 404 });
   }
@@ -775,4 +631,3 @@ if (url.pathname === "/test-reminder") {
 
   return new Response("Method not allowed", { status: 405 });
 });
-
