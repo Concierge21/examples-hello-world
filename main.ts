@@ -1,21 +1,16 @@
 // ============================================================
 // Pain Rheylief House — Unified Automation Server (Deno Deploy)
-// Single Facebook webhook that routes all 5 workflows.
+// Single Facebook webhook that routes 4 workflows.
 //
 // W1: AI Chatbot (Groq + Deno KV memory + booking → Sheets + owner DM)
 // W2: Daily 12PM Manila client reminder to owner (Deno.cron)
 // W3: Monthly follow-up to all leads, 1st @ 10AM Manila (Deno.cron)
 // W4: BUSY/OPEN schedule blocking via page posts (Gemini date parse)
-// W5: New page post → Gemini script/caption/hashtags → Pexels video
-//     → auto-posts a Reel via public file_url + DMs owner the
-//     voiceover kit. (FFmpeg merging/voiceover baking is not possible
-//     on serverless — this posts a single stock clip instead.)
 //
 // ENVIRONMENT VARIABLES (Deno Deploy → Project → Settings → Env):
 //   FB_PAGE_TOKEN     Facebook Page access token
 //   GROQ_API_KEY      Groq API key (gsk_...)
 //   GEMINI_API_KEY    Google Gemini API key
-//   PEXELS_API_KEY    Pexels API key
 //   VERIFY_TOKEN      Webhook verify token (painrheylief2026)
 //   SHEETS_LEADS_URL  Apps Script URL for saving bookings (W1)
 //   SHEETS_DATA_URL   Apps Script URL for reading rows / date blocks (W2-W4)
@@ -26,7 +21,6 @@
 const FB_PAGE_TOKEN = Deno.env.get("FB_PAGE_TOKEN") ?? "";
 const GROQ_API_KEY = Deno.env.get("GROQ_API_KEY") ?? "";
 const GEMINI_API_KEY = Deno.env.get("GEMINI_API_KEY") ?? "";
-const PEXELS_API_KEY = Deno.env.get("PEXELS_API_KEY") ?? "";
 const VERIFY_TOKEN = Deno.env.get("VERIFY_TOKEN") ?? "painrheylief2026";
 const SHEETS_LEADS_URL = Deno.env.get("SHEETS_LEADS_URL") ?? "";
 const SHEETS_DATA_URL = Deno.env.get("SHEETS_DATA_URL") ?? "";
@@ -250,111 +244,6 @@ async function handleScheduleCommand(postMessage: string) {
   );
 }
 
-// ------------------------------------------------------------
-// Workflow 5 — New post → auto Reel (single clip) + owner kit
-// ------------------------------------------------------------
-
-async function pickPexelsVideoUrl(keyword: string): Promise<string> {
-  if (!PEXELS_API_KEY) return "";
-  try {
-    const res = await fetch(
-      `https://api.pexels.com/videos/search?query=${encodeURIComponent(keyword)}&per_page=3&orientation=portrait&size=medium`,
-      { headers: { Authorization: PEXELS_API_KEY } },
-    );
-    if (!res.ok) {
-      console.error("Pexels error:", res.status, await res.text());
-      return "";
-    }
-    const data = await res.json();
-    const videos = data.videos ?? [];
-    for (const v of videos) {
-      const files = v.video_files ?? [];
-      const portraitHd = files.find((f: { height: number; width: number; quality: string }) =>
-        f.height > f.width && f.quality === "hd"
-      );
-      const anyPortrait = files.find((f: { height: number; width: number }) =>
-        f.height > f.width
-      );
-      const chosen = portraitHd || anyPortrait || files[0];
-      if (chosen?.link) return chosen.link as string;
-    }
-    return "";
-  } catch (e) {
-    console.error("Pexels request error:", e);
-    return "";
-  }
-}
-async function pickPexelsVideoUrls(keyword: string, count: number): Promise<string[]> {
-  if (!PEXELS_API_KEY) return [];
-  try {
-    const res = await fetch(
-      `https://api.pexels.com/videos/search?query=${encodeURIComponent(keyword)}&per_page=15&orientation=portrait&min_duration=8`,
-      { headers: { Authorization: PEXELS_API_KEY } },
-    );
-    if (!res.ok) return [];
-    const data = await res.json();
-    const out: string[] = [];
-    for (const v of data.videos ?? []) {
-      const files = v.video_files ?? [];
-      const pick = files.find((f: { height: number; width: number; quality: string }) =>
-        f.height > f.width && f.quality === "hd"
-      ) || files.find((f: { height: number; width: number }) => f.height > f.width);
-      if (pick?.link) out.push(pick.link);
-      if (out.length >= count) break;
-    }
-    return out;
-  } catch (e) {
-    console.error("Pexels multi error:", e);
-    return [];
-  }
-}
-
-async function handleNewPost(postMessage: string) {
-  const parsed = await geminiJson(
-    `You are a content creator for Pain Rheylief House, a massage and pain relief therapy clinic in Tacloban City, Philippines.\n\nBased on this Facebook post: '${postMessage}'\n\nRespond ONLY with a valid JSON object (no markdown, no backticks, no extra text):\n{\n  "pexels_keyword": "short 2-3 word search term for anatomy or pain relief video (example: back pain massage, neck pain relief, spine anatomy)",\n  "script": "Write a 30-second educational voiceover script about the pain topic in this post. Structure: First 5 seconds hook question. Next 15 seconds explain the pain cause and one simple tip to relieve it. Last 10 seconds say: For professional pain relief, visit Pain Rheylief House at The Healthy Hub, Arellano Street, Tacloban City. Open 1PM to 8PM daily. Message us on Facebook to book your session today!",\n  "caption": "Engaging Facebook Reel caption under 150 characters with one relevant emoji",\n  "hashtags": "#PainRelief #MassageTherapy #PainRheyliefHouse #TaclobanCity #BackPain #MassagePh #PainManagement #DeepTissue #HilotPh #NaturalHealing #BodyPain #MassageHeals #TaclobanMassage #PainFree #WellnessPh"\n}`,
-  );
-
-  const keyword = (parsed.pexels_keyword as string) ?? "massage therapy pain relief";
-  console.log("W5 fired — full parsed:", JSON.stringify(parsed).slice(0, 300));
-  const script = (parsed.script as string) ??
-    "Is your body in pain? At Pain Rheylief House, our expert therapists provide professional pain relief treatments. Visit us at The Healthy Hub, Arellano Street, Tacloban City. Open 1PM to 8PM daily. Message us on Facebook to book your session today!";
-  const caption = (parsed.caption as string) ??
-    "Professional pain relief is just one session away! 💆";
-  const hashtags = (parsed.hashtags as string) ??
-    "#PainRelief #MassageTherapy #PainRheyliefHouse #TaclobanCity";
-
-  // Try to auto-post a Reel using a public Pexels video URL
-  const videoUrl = await pickPexelsVideoUrl(keyword);
-  let posted = false;
-
-  if (videoUrl) {
-    try {
-      const form = new URLSearchParams();
-      form.set("access_token", FB_PAGE_TOKEN);
-      form.set("description", `${caption} ${hashtags}`);
-      form.set("file_url", videoUrl);
-
-      const res = await fetch(`${GRAPH}/${PAGE_ID}/videos`, {
-        method: "POST",
-        body: form,
-      });
-      posted = res.ok;
-      if (!res.ok) console.error("Reel post failed:", res.status, await res.text());
-    } catch (e) {
-      console.error("Reel post error:", e);
-    }
-  }
-
-  // Always DM the owner the full content kit
-  const statusLine = posted
-    ? "✅ A video Reel was auto-posted to the Page with this caption!"
-    : "⚠️ Auto-post didn't go through — you can post manually with this kit:";
-
-  await sendMessengerText(
-    OWNER_PSID,
-    `🎬 Reel Kit for your new post!\n${statusLine}\n\n📝 CAPTION:\n${caption}\n\n🏷️ HASHTAGS:\n${hashtags}\n\n🎙️ VOICEOVER SCRIPT (for a custom version later):\n${script}`,
-  );
-}
 
 // ------------------------------------------------------------
 // Workflow 2 — Daily 12PM Manila reminder (04:00 UTC)
@@ -447,7 +336,7 @@ async function processEvents(body: Record<string, unknown>) {
       await handleChatMessage(senderId, messageText);
     }
 
-    // ---- Feed events → Workflow 4 or 5 ----
+    // ---- Feed events → Workflow 4 only (BUSY/OPEN commands) ----
     const changes = (entry.changes as Record<string, unknown>[]) ?? [];
     for (const change of changes) {
       if (change.field !== "feed") continue;
@@ -473,363 +362,31 @@ async function processEvents(body: Record<string, unknown>) {
       const postId = String(value.post_id ?? "");
       const dedupKey = postId || String(value.message ?? "").slice(0, 50);
       if (dedupKey && (await seenBefore(`feed_${dedupKey}`, 24 * 60 * 60 * 1000))) continue;
-      if (await seenBefore(`feed_rate_limit`, 5 * 60 * 1000)) continue;
       const upper = postMessage.toUpperCase();
-      if (upper.startsWith("BUSY") || upper.startsWith("OPEN")) {
-        await handleScheduleCommand(postMessage); // Workflow 4
-      } else {
-        await handleNewPost(postMessage); // Workflow 5
-      }
+      if (!upper.startsWith("BUSY") && !upper.startsWith("OPEN")) continue;
+
+      await handleScheduleCommand(postMessage); // Workflow 4
     }
   }
 }
 
-const CLOUDINARY_CLOUD_NAME = Deno.env.get("CLOUDINARY_CLOUD_NAME") ?? "";
-const CLOUDINARY_API_KEY = Deno.env.get("CLOUDINARY_API_KEY") ?? "";
-const CLOUDINARY_API_SECRET = Deno.env.get("CLOUDINARY_API_SECRET") ?? "";
-const OPENAI_API_KEY = Deno.env.get("OPENAI_API_KEY") ?? "";
-
-async function sha1Hex(input: string): Promise<string> {
-  const buf = await crypto.subtle.digest("SHA-1", new TextEncoder().encode(input));
-  return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("");
-}
-
-async function makeVoiceover(script: string): Promise<Uint8Array | null> {
-  try {
-    const res = await fetch("https://api.openai.com/v1/audio/speech", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${OPENAI_API_KEY}`,
-      },
-      body: JSON.stringify({
-        model: "gpt-4o-mini-tts",
-        voice: "nova",
-        input: script.slice(0, 4000),
-      }),
-    });
-    if (!res.ok) {
-      console.error("TTS failed:", res.status, await res.text());
-      return null;
-    }
-    return new Uint8Array(await res.arrayBuffer());
-  } catch (e) {
-    console.error("TTS error:", e);
-    return null;
-  }
-}
-
-async function cloudinaryUpload(file: string, publicId: string): Promise<string> {
-  try {
-    const timestamp = Math.floor(Date.now() / 1000);
-    const toSign = `public_id=${publicId}&timestamp=${timestamp}${CLOUDINARY_API_SECRET}`;
-    const signature = await sha1Hex(toSign);
-
-    const form = new FormData();
-    form.set("file", file);
-    form.set("api_key", CLOUDINARY_API_KEY);
-    form.set("timestamp", String(timestamp));
-    form.set("public_id", publicId);
-    form.set("signature", signature);
-
-    const res = await fetch(
-      `https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD_NAME}/video/upload`,
-      { method: "POST", body: form },
-    );
-    const data = await res.json();
-    if (!res.ok) {
-      console.error("Cloudinary upload failed:", JSON.stringify(data).slice(0, 300));
-      return "";
-    }
-    return data.public_id ?? "";
-  } catch (e) {
-    console.error("Cloudinary upload error:", e);
-    return "";
-  }
-}
-
-function bytesToDataUri(bytes: Uint8Array): string {
-  let binary = "";
-  const chunk = 8192;
-  for (let i = 0; i < bytes.length; i += chunk) {
-    binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
-  }
-  return `data:audio/mp3;base64,${btoa(binary)}`;
-}
-
-async function buildVoicedVideo(videoUrls: string[], script: string): Promise<string> {
-  const stamp = Date.now();
-  const audioBytes = await makeVoiceover(script);
-  if (!audioBytes) return "";
-
-  const audioId = await cloudinaryUpload(bytesToDataUri(audioBytes), `vo_${stamp}`);
-  if (!audioId) return "";
-
-  const ids: string[] = [];
-  for (let i = 0; i < videoUrls.length; i++) {
-    const id = await cloudinaryUpload(videoUrls[i], `clip_${stamp}_${i}`);
-    if (id) ids.push(id);
-  }
-  if (ids.length === 0) return "";
-  console.log("Splice: uploaded", ids.length, "clips:", ids.join(", "));
-
-  const SIZE = "c_fill,h_1920,w_1080";
-  let chain = `${SIZE}/`;
-  for (let i = 1; i < ids.length; i++) {
-    chain += `l_video:${ids[i]}/${SIZE}/fl_splice,fl_layer_apply/`;
-  }
-  chain += `ac_none/l_audio:${audioId}/fl_layer_apply/`;
-
-  const merged =
-    `https://res.cloudinary.com/${CLOUDINARY_CLOUD_NAME}/video/upload/${chain}${ids[0]}.mp4`;
-
-  try {
-    await fetch(merged, { method: "GET" });
-  } catch { /* ignore */ }
-
-  return merged;
-}
-const ANATOMY_CLIPS: Record<string, string[]> = {
-  "lower back": ["anat_back_1", "anat_back_2"],
-  "upper back": ["anat_back_1", "anat_back_2"],
-  "neck": ["anat_neck_1"],
-  "shoulders": ["anat_shoulder_1"],
-  "knees": ["anat_knee_1"],
-  "hips": ["anat_hip_1"],
-  "wrists": ["anat_wrist_1"],
-  "ankles": ["anat_ankle_1"],
-  "jaw": ["anat_jaw_1"],
-  "elbows": ["anat_elbow_1"],
-};
-
-function pickClipFor(bodyPart: string): string {
-  const key = bodyPart.toLowerCase().trim();
-  const list = ANATOMY_CLIPS[key] ?? Object.values(ANATOMY_CLIPS).flat();
-  return list[Math.floor(Math.random() * list.length)];
-}
-
-// --- 1. The Pexels Video Discovery Tool ---
-async function fetchStockVideo(keyword: string): Promise<string> {
-  try {
-    const res = await fetch(
-      `https://api.pexels.com/v1/videos/search?query=${encodeURIComponent(keyword)}&per_page=5&orientation=portrait`,
-      {
-        headers: {
-          Authorization: "563492ad6f91700001000001bc4fb99285744abfa2b02888c3a17e08",
-        },
-      }
-    );
-    if (!res.ok) return "";
-    const data = await res.json();
-    
-    const video = data.videos?.[0];
-    if (!video) return "";
-    
-    const file = video.video_files.find(
-      (f: any) => f.width >= 720 && f.width < f.height
-    ) || video.video_files[0];
-    
-    return file?.link || "";
-  } catch {
-    return "";
-  }
-}
-
-// --- 2. The Updated Automated Video Engine ---
-async function buildReel30Sec(clipId: string, script: string, lines: string[], titleText: string): Promise<string> {
-  const audioBytes = await makeVoiceover(script);
-  if (!audioBytes) return "";
-  const audioId = await cloudinaryUpload(bytesToDataUri(audioBytes), `vo_${Date.now()}`);
-  if (!audioId) return "";
-
-  const clean = (s: string) =>
-    encodeURIComponent(s.replace(/[^a-zA-Z0-9 ]/g, " ").replace(/\s+/g, " ").trim().slice(0, 55));
-
-  console.log(`Searching for automated video assets matching: ${clipId}...`);
-  // Automatically search stock videos for the target topic (e.g., "neck massage therapy")
-  let videoUrl = await fetchStockVideo(`${clipId} massage therapy stretching`);
-  
-  // High-quality backup clinical canvas link if the specific lookup fails
-  if (!videoUrl) {
-    videoUrl = "https://player.vimeo.com/external/459389137.sd.mp4?s=96ae6ca7f34c6e6eb1c784e27f078a3d5272a275&profile_id=165&oauth2_token_id=57447761";
-  }
-  
-  const encodedVideoUrl = encodeURIComponent(videoUrl);
-
-  const encodedTitle = clean(titleText);
-  const topBannerLayer = `l_text:Arial_52_bold:${encodedTitle},co_white,b_rgb:004D40CC,g_north,y_60,w_980,c_fit/fl_layer_apply/`;
-
-  const span = 30 / Math.max(lines.length, 1);
-  let textChain = topBannerLayer;
-  
-  lines.forEach((line, i) => {
-    const start = Math.round(i * span);
-    const end = Math.round((i + 1) * span);
-    textChain +=
-      `l_text:Arial_58_bold:${clean(line)},co_white,b_rgb:000000B3,g_south,y_350,w_900,c_fit,so_${start},eo_${end}/fl_layer_apply/`;
-  });
-
-  // Notice the '/fetch/' parameter—this tells Cloudinary to grab the external stock video link on the fly!
-  const merged =
-    `https://res.cloudinary.com/${CLOUDINARY_CLOUD_NAME}/video/upload/c_fill,h_1920,w_1080,du_30/${textChain}l_video:${audioId}/fl_layer_apply/fetch/${encodedVideoUrl}`;
-
-  console.log("30-Second Dynamic Reel URL:", merged);
-  
-  let isReady = false;
-  for (let i = 1; i <= 15; i++) {
-    console.log(`Checking Cloudinary video compilation... (Attempt ${i}/15)`);
-    try {
-      const res = await fetch(merged);
-      if (res.body) await res.body.cancel(); 
-
-      if (res.ok) {
-        console.log("✅ Reel fully compiled! Ready for Facebook deployment.");
-        isReady = true;
-        break;
-      } else {
-        console.log(`Cloudinary engine status: ${res.status}. Stitched video baking...`);
-      }
-    } catch (e) {
-      // Ignore network dropouts
-    }
-    await new Promise(resolve => setTimeout(resolve, 6000));
-  }
-
-  if (!isReady) {
-    console.log("⚠️ Warning: Cloudinary took too long to stitch layers.");
-  }
-
-  return merged;
-}
-
-async function weeklyAnatomyReel() {
-  const parsed = await geminiJson(
-    `Create a weekly educational Reel for Pain Rheylief House, a pain relief clinic in Tacloban City, Philippines.\n\nPick ONE body part from this list: lower back, neck, shoulders, knees, hips, wrists, upper back, ankles, jaw, elbows.\n\nRespond ONLY with valid JSON. No markdown, no backticks. Every field a non-empty string:\n{\n  "body_part": "the part you chose",\n  "title_text": "Short uppercase header banner text, example: ANATOMY FOCUS: LOWER BACK TENSION",\n  "pexels_keyword": "stock video search term, 2-3 words, 3d medical animation",\n  "script": "Strict 30-second English voiceover: (1) hook question about that pain, (2) what that body part actually does, (3) the most common cause of pain there, (4) ONE simple home stretch tip, (5) end with: For lasting relief, visit Pain Rheylief House at The Healthy Hub, Arellano Street, Tacloban City. Open 1PM to 8PM daily. Message us for a free consultation.",\n  "text_lines": [\n    "Line 1 (Hook): Stiff or aching [body part]?",\n    "Line 2 (Cause): Sitting or stress causes deep tension",\n    "Line 3 (Movement): Try gentle cross-body stretches",\n    "Line 4 (Hold): Hold for 20 seconds to release",\n    "Line 5 (CTA): Message us for a free consultation"\n  ],\n  "caption": "English caption under 150 characters naming the body part and tip, one emoji, invites a consultation"\n}\n\nCONTENT RULES:\n- EDUCATIONAL only. NEVER mention prices, rates, packages, or promos.\n- Plain language explanation.\n- ENGLISH ONLY. No Tagalog, no Taglish.`,
-  );
-
-  const bodyPart = (parsed.body_part as string) || "lower back";
-  const titleText = (parsed.title_text as string) || `ANATOMY FOCUS: ${bodyPart.toUpperCase()}`;
-  const keyword = (parsed.pexels_keyword as string) || "3d human anatomy medical";
-  const script = (parsed.script as string) || "";
-  const rawCaption = (parsed.caption as string) ?? "";
-  const caption = rawCaption.trim() && rawCaption.trim() !== "undefined"
-    ? rawCaption.trim()
-    : "Your body deserves to heal. Message us for a consultation. 💆";
-
-  console.log("Weekly Reel — body part:", bodyPart, "| title:", titleText);
-  if (!script) {
-    console.error("Weekly Reel: no script from Gemini");
-    return;
-  }
-
-  const rawLines = parsed.text_lines;
-  const lines = Array.isArray(rawLines) && rawLines.length
-    ? (rawLines as string[])
-    : [
-        "Stiff or aching body parts?",
-        "Daily tension builds up over time",
-        "Try gentle controlled movements",
-        "Hold for 20 seconds to release",
-        "Message us for a free consultation"
-      ];
-
-// Start the background process without 'await'
-  buildReel30Sec(pickClipFor(bodyPart), script, lines, titleText)
-    .then(async (voicedUrl) => {
-      if (!voicedUrl) {
-        console.error("Weekly Reel: merge failed");
-        return;
-      }
-      console.log("✅ Video ready from background thread! Proceeding to post...");
-
-  // Download and open the sample video directly on your desktop for review
-      try {
-      const videoRes = await fetch(voicedUrl);
-      const videoBuffer = new Uint8Array(await videoRes.arrayBuffer());
-
-const desktopPath = `${Deno.env.get("USERPROFILE") || "C:\\Users\\partn"}\\Desktop\\sample_reel.mp4`;
-      await Deno.writeFile(desktopPath, videoBuffer);
-      console.log(`📁 Sample reel saved to: ${desktopPath}`);
-
-      const command = new Deno.Command("cmd", {
-        args: ["/c", "start", "", desktopPath],
-      });
-      await command.output();
-      console.log("🎬 Sample video opened on desktop!");
-    } catch (err) {
-      console.error("Error opening sample video on desktop:", err);
-    }
-
-
-    }) // <--- PART 2 STARTS HERE (Closes the background worker)
-    .catch(err => console.error("Reel Generation Worker Error:", err));
-
-  // Send an instant response so the browser doesn't wait 30 seconds and crash
-  return new Response(JSON.stringify({ status: "Processing Reel in background! Check your logs." }), {
-    status: 202,
-    headers: { "Content-Type": "application/json" }
-  });
-} // <--- This is that original closing bracket (was previously on line 761)
-
-
-Deno.cron("weekly anatomy reel", "0 1 * * 1", weeklyAnatomyReel);
 Deno.serve(async (req: Request) => {
   const url = new URL(req.url);
 
   if (url.pathname === "/" && req.method === "GET") {
     return new Response("Pain Rheylief automation server is running 🌿", { status: 200 });
   }
-if (url.pathname === "/test-owner") {
-    const res = await fetch(
-      `https://graph.facebook.com/v21.0/me/messages?access_token=${Deno.env.get("FB_PAGE_TOKEN")}`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          recipient: { id: Deno.env.get("OWNER_PSID") },
-          messaging_type: "RESPONSE",
-          message: { text: "✅ Test alert from Pain RHEYlief House automation. If you see this, notifications are working." },
-        }),
-      }
-    );
-    const data = await res.json();
-    return new Response(JSON.stringify(data, null, 2), {
-      headers: { "Content-Type": "application/json" },
-    });
-  }
-if (url.pathname === "/test-reminder") {
-    await dailyClientReminder();
-    return new Response("Reminder fired — check Messenger and Deno logs");
-  }
-    if (url.pathname === "/reset-chat") {
+  // ⚠️ TEMPORARY TEST ROUTE — DELETE THIS BLOCK BEFORE CLIENT HANDOFF ⚠️
+  // Clears one person's chat memory so you can re-test from scratch.
+  // Usage: /reset-chat?id=YOUR_PSID
+  if (url.pathname === "/reset-chat") {
     const sid = url.searchParams.get("id") ?? "";
-    if (!sid) return new Response("Missing ?id=");
+    if (!sid) return new Response("Missing ?id=<PSID>");
     await kv.delete(["chat_history", sid]);
-    return new Response(`Chat history cleared for ${sid}`);
+    return new Response(`Chat history cleared for ${sid}. Message the Page to start fresh.`);
   }
-  if (url.pathname === "/test-cloudinary") {
-    const clip = await pickPexelsVideoUrl("spine anatomy 3d");
-    if (!clip) return new Response("No Pexels clip found");
-    const id = await cloudinaryUpload(clip, `test_${Date.now()}`);
-    if (!id) return new Response("Cloudinary upload FAILED — check Deno logs");
-    return new Response(
-      `Upload OK\npublic_id: ${id}\nhttps://res.cloudinary.com/${CLOUDINARY_CLOUD_NAME}/video/upload/${id}.mp4`,
-    );
-  }
-  if (url.pathname === "/test-voiced") {
-    const clips = await pickPexelsVideoUrls("spine anatomy 3d", 3);
-    if (clips.length === 0) return new Response("No Pexels clips found");
-    const merged = await buildVoicedVideo(
-      clips,
-      "Your spine carries you through every movement of your day. When the muscles around it tighten, pain follows. For professional pain relief, visit Pain Rheylief House at The Healthy Hub, Arellano Street, Tacloban City. Open 1PM to 8PM daily.",
-    );
-    if (!merged) return new Response("Merge FAILED — check Deno logs");
-    return new Response(`Merged OK\n${merged}`);
-  }
-  if (url.pathname === "/test-weekly") {
-    await weeklyAnatomyReel();
-    return new Response("Weekly Reel fired — check the Page and logs");
-  }
+  // ⚠️ END TEMPORARY TEST ROUTE ⚠️
+
   if (url.pathname !== "/webhook") {
     return new Response("Not found", { status: 404 });
   }
