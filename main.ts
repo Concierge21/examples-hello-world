@@ -4,23 +4,15 @@
 //
 // W1: AI Chatbot (Groq + Deno KV memory + booking → Sheets + owner DM)
 // W2: Daily 12PM Manila client reminder to owner (Deno.cron)
-// W3: Monthly follow-up to all leads, 1st @ 10AM Manila (Deno.cron)
 // W4: BUSY/OPEN schedule blocking via page posts (Gemini date parse)
-// W6: Weekly educational Reel — Gemini script + on-screen lines,
-//     OpenAI TTS voiceover, Cloudinary text + audio overlay,
-//     auto-posted to the Page. Mondays 9AM Manila.
 //
-// NOTE: the old "new page post → auto Reel" workflow has been removed.
-// Page posts now only trigger BUSY/OPEN schedule handling.
+// NOTE: all Reel/video generation has been removed. Page posts now only
+// trigger BUSY/OPEN schedule handling. No Cloudinary, no Pexels, no TTS.
 //
 // ENVIRONMENT VARIABLES (Deno Deploy → Project → Settings → Env):
 //   FB_PAGE_TOKEN            Facebook Page access token
 //   GROQ_API_KEY             Groq API key (gsk_...)
 //   GEMINI_API_KEY           Google Gemini API key
-//   OPENAI_API_KEY           OpenAI API key (TTS)
-//   CLOUDINARY_CLOUD_NAME    Cloudinary cloud name
-//   CLOUDINARY_API_KEY       Cloudinary API key
-//   CLOUDINARY_API_SECRET    Cloudinary API secret
 //   VERIFY_TOKEN             Webhook verify token (painrheylief2026)
 //   SHEETS_LEADS_URL         Apps Script URL for saving bookings (W1)
 //   SHEETS_DATA_URL          Apps Script URL for reading rows / date blocks
@@ -37,10 +29,6 @@ const SHEETS_LEADS_URL = Deno.env.get("SHEETS_LEADS_URL") ?? "";
 const SHEETS_DATA_URL = Deno.env.get("SHEETS_DATA_URL") ?? "";
 const OWNER_PSID = Deno.env.get("OWNER_PSID") ?? "7386353388108184";
 const PAGE_ID = Deno.env.get("PAGE_ID") ?? "376260662410328";
-const CLOUDINARY_CLOUD_NAME = Deno.env.get("CLOUDINARY_CLOUD_NAME") ?? "";
-const CLOUDINARY_API_KEY = Deno.env.get("CLOUDINARY_API_KEY") ?? "";
-const CLOUDINARY_API_SECRET = Deno.env.get("CLOUDINARY_API_SECRET") ?? "";
-const OPENAI_API_KEY = Deno.env.get("OPENAI_API_KEY") ?? "";
 const TELEGRAM_BOT_TOKEN = Deno.env.get("TELEGRAM_BOT_TOKEN") ?? "";
 const TELEGRAM_CHAT_ID = Deno.env.get("TELEGRAM_CHAT_ID") ?? "";
 const kv = await Deno.openKv();
@@ -280,176 +268,6 @@ async function dailyClientReminder() {
 }
 Deno.cron("daily client reminder", "0 4 * * *", dailyClientReminder);
 // ------------------------------------------------------------
-// Workflow 3 — Monthly follow-up (1st @ 10AM Manila = 02:00 UTC)
-// ------------------------------------------------------------
-Deno.cron("monthly lead followup", "0 2 1 * *", async () => {
-  if (!SHEETS_DATA_URL) return;
-  try {
-    const res = await fetch(SHEETS_DATA_URL);
-    const rows: Record<string, string>[] = await res.json();
-    const leads = rows.filter((row) => {
-      const id = row.senderId || row.SenderID || "";
-      return id && id.length > 5;
-    });
-    for (const row of leads) {
-      const senderId = row.senderId || row.SenderID;
-      const name = row.name || row.Name || "Ka";
-      const service = row.service || row.Service || "therapy session";
-      await sendMessengerText(
-        senderId,
-        `Hi ${name}! 🌿 It's been a while since your last session at Pain Rheylief House. Your body might be ready for another ${service}!\n\nWe're open 1PM-8PM daily at The Healthy Hub, Arellano St., Tacloban City.\n\nWant to book again? Just reply here and we'll set it up for you! 😊`,
-      );
-      await new Promise((r) => setTimeout(r, 2000)); // gentle rate limit
-    }
-  } catch (e) {
-    console.error("Monthly follow-up failed:", e);
-  }
-});
-// ------------------------------------------------------------
-// Media pipeline — TTS + Cloudinary
-// ------------------------------------------------------------
-async function sha1Hex(input: string): Promise<string> {
-  const buf = await crypto.subtle.digest("SHA-1", new TextEncoder().encode(input));
-  return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("");
-}
-async function makeVoiceover(script: string): Promise<Uint8Array | null> {
-  try {
-    const res = await fetch("https://api.openai.com/v1/audio/speech", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${OPENAI_API_KEY}`,
-      },
-      body: JSON.stringify({
-        model: "gpt-4o-mini-tts",
-        voice: "nova",
-        input: script.slice(0, 4000),
-      }),
-    });
-    if (!res.ok) {
-      console.error("TTS failed:", res.status, await res.text());
-      return null;
-    }
-    return new Uint8Array(await res.arrayBuffer());
-  } catch (e) {
-    console.error("TTS error:", e);
-    return null;
-  }
-}
-async function cloudinaryUpload(file: string, publicId: string): Promise<string> {
-  try {
-    const timestamp = Math.floor(Date.now() / 1000);
-    const toSign = `public_id=${publicId}&timestamp=${timestamp}${CLOUDINARY_API_SECRET}`;
-    const signature = await sha1Hex(toSign);
-    const form = new FormData();
-    form.set("file", file);
-    form.set("api_key", CLOUDINARY_API_KEY);
-    form.set("timestamp", String(timestamp));
-    form.set("public_id", publicId);
-    form.set("signature", signature);
-    const res = await fetch(
-      `https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD_NAME}/video/upload`,
-      { method: "POST", body: form },
-    );
-    const data = await res.json();
-    if (!res.ok) {
-      console.error("Cloudinary upload failed:", JSON.stringify(data).slice(0, 300));
-      return "";
-    }
-    return data.public_id ?? "";
-  } catch (e) {
-    console.error("Cloudinary upload error:", e);
-    return "";
-  }
-}
-function bytesToDataUri(bytes: Uint8Array): string {
-  let binary = "";
-  const chunk = 8192;
-  for (let i = 0; i < bytes.length; i += chunk) {
-    binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
-  }
-  return `data:audio/mp3;base64,${btoa(binary)}`;
-}
-// ------------------------------------------------------------
-// Workflow 6 — Weekly educational Reel (Mondays 9AM Manila = 01:00 UTC)
-// ------------------------------------------------------------
-const ANATOMY_CLIPS: Record<string, string[]> = {
-  "lower back": ["anat_back_1", "anat_back_2"],
-  "upper back": ["anat_back_1", "anat_back_2"],
-  "neck": ["anat_neck_1"],
-  "shoulders": ["anat_shoulder_1"],
-  "knees": ["anat_knee_1"],
-  "hips": ["anat_hip_1"],
-  "wrists": ["anat_wrist_1"],
-  "ankles": ["anat_ankle_1"],
-  "jaw": ["anat_jaw_1"],
-  "elbows": ["anat_elbow_1"],
-};
-function pickClipFor(bodyPart: string): string {
-  const key = bodyPart.toLowerCase().trim();
-  const list = ANATOMY_CLIPS[key] ?? Object.values(ANATOMY_CLIPS).flat();
-  return list[Math.floor(Math.random() * list.length)];
-}
-async function buildReel(clipId: string, script: string, lines: string[]): Promise<string> {
-  const audioBytes = await makeVoiceover(script);
-  if (!audioBytes) return "";
-  const audioId = await cloudinaryUpload(bytesToDataUri(audioBytes), `vo_${Date.now()}`);
-  if (!audioId) return "";
-  const clean = (s: string) =>
-    encodeURIComponent(s.replace(/[^a-zA-Z0-9 ]/g, " ").replace(/\s+/g, " ").trim().slice(0, 55));
-  const span = 25 / Math.max(lines.length, 1);
-  let textChain = "";
-  lines.forEach((line, i) => {
-    const start = Math.round(i * span);
-    const end = Math.round((i + 1) * span);
-    textChain +=
-      `l_text:Arial_62_bold:${clean(line)},co_white,b_rgb:000000B3,g_south,y_300,w_900,c_fit,so_${start},eo_${end}/fl_layer_apply/`;
-  });
-  const merged =
-    `https://res.cloudinary.com/${CLOUDINARY_CLOUD_NAME}/video/upload/c_fill,h_1920,w_1080/${textChain}ac_none/l_audio:${audioId}/fl_layer_apply/${clipId}.mp4`;
-  console.log("Weekly Reel URL:", merged);
-  try { await fetch(merged); } catch { /* ignore */ }
-  return merged;
-}
-async function weeklyAnatomyReel() {
-  const parsed = await geminiJson(
-    `Create a weekly educational Reel for Pain Rheylief House, a pain relief clinic in Tacloban City, Philippines.\n\nPick ONE body part from this list: lower back, neck, shoulders, knees, hips, wrists, upper back, ankles, jaw, elbows.\n\nRespond ONLY with valid JSON. No markdown, no backticks. Every field a non-empty string:\n{\n  "body_part": "the part you chose",\n  "script": "25-second English voiceover: (1) hook question about that pain, (2) what that body part actually does, (3) the most common cause of pain there, (4) ONE simple stretch or movement a person can do at home to relieve it, described step by step with how long to hold it, (5) end with: For lasting relief, visit Pain Rheylief House at The Healthy Hub, Arellano Street, Tacloban City. Open 1PM to 8PM daily. Message us to book a consultation.",\n  "text_lines": ["4 to 6 on-screen lines, max 6 words each, following the voiceover order: hook, cause, the movement, how long to hold, why it helps, invitation to message"],\n  "caption": "English caption under 150 characters naming the body part and the tip, one emoji, invites a consultation"\n}\n\nCONTENT RULES:\n- EDUCATIONAL only. NEVER mention prices, rates, packages, peso amounts, or promos.\n- Explain the anatomy in plain language a non-medical reader understands.\n- The movement must be safe and general — stretching, posture, heat, rest. Never diagnose.\n- ENGLISH ONLY. No Tagalog, no Taglish.`,
-  );
-  const bodyPart = (parsed.body_part as string) || "lower back";
-  const script = (parsed.script as string) || "";
-  const rawCaption = (parsed.caption as string) ?? "";
-  const caption = rawCaption.trim() && rawCaption.trim() !== "undefined"
-    ? rawCaption.trim()
-    : "Your body deserves to heal. Message us for a consultation. 💆";
-  console.log("Weekly Reel — body part:", bodyPart);
-  if (!script) {
-    console.error("Weekly Reel: no script from Gemini");
-    return;
-  }
-  const rawLines = parsed.text_lines;
-  const lines = Array.isArray(rawLines) && rawLines.length
-    ? (rawLines as string[])
-    : ["Body pain slowing you down", "Try this simple stretch", "Hold for 20 seconds", "Message us for a consultation"];
-  const voicedUrl = await buildReel(pickClipFor(bodyPart), script, lines);
-  if (!voicedUrl) {
-    console.error("Weekly Reel: merge failed");
-    return;
-  }
-  const hashtags =
-    "#PainRelief #MassageTherapy #PainRheyliefHouse #TaclobanCity #BodyPain #PainFree #WellnessPh";
-  const form = new URLSearchParams();
-  form.set("access_token", FB_PAGE_TOKEN);
-  form.set("description", `${caption}\n\n${hashtags}`);
-  form.set("file_url", voicedUrl);
-  const res = await fetch(`${GRAPH}/${PAGE_ID}/videos`, { method: "POST", body: form });
-  const ok = res.ok;
-  if (!ok) console.error("Weekly Reel post failed:", res.status, await res.text());
-  await notifyOwner(
-    ok ? `🎬 Weekly Reel posted — ${bodyPart}\n\n📝 ${caption}` : `⚠️ Weekly Reel failed. Check logs.`,
-  );
-}
-Deno.cron("weekly anatomy reel", "0 1 * * 1", weeklyAnatomyReel);
-// ------------------------------------------------------------
 // Main webhook server — single endpoint, routes by payload
 // ------------------------------------------------------------
 async function processEvents(body: Record<string, unknown>) {
@@ -531,10 +349,6 @@ Deno.serve(async (req: Request) => {
     if (!sid) return new Response("Missing ?id=");
     await kv.delete(["chat_history", sid]);
     return new Response(`Chat history cleared for ${sid}`);
-  }
-  if (url.pathname === "/test-weekly") {
-    await weeklyAnatomyReel();
-    return new Response("Weekly Reel fired — check the Page and logs");
   }
   if (url.pathname !== "/webhook") {
     return new Response("Not found", { status: 404 });
