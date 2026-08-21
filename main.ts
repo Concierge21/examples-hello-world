@@ -1,25 +1,6 @@
 // ============================================================
 // Pain Rheylief House — Unified Automation Server (Deno Deploy)
 // Single Facebook webhook that routes the workflows.
-//
-// W1: AI Chatbot (Groq + Deno KV memory + booking → Sheets + owner DM)
-// W2: Daily 12PM Manila client reminder to owner (Deno.cron)
-// W4: BUSY/OPEN schedule blocking via page posts (Gemini date parse)
-//
-// NOTE: all Reel/video generation has been removed. Page posts now only
-// trigger BUSY/OPEN schedule handling. No Cloudinary, no Pexels, no TTS.
-//
-// ENVIRONMENT VARIABLES (Deno Deploy → Project → Settings → Env):
-//   FB_PAGE_TOKEN            Facebook Page access token
-//   GROQ_API_KEY             Groq API key (gsk_...)
-//   GEMINI_API_KEY           Google Gemini API key
-//   VERIFY_TOKEN             Webhook verify token (painrheylief2026)
-//   SHEETS_LEADS_URL         Apps Script URL for saving bookings (W1)
-//   SHEETS_DATA_URL          Apps Script URL for reading rows / date blocks
-//   OWNER_PSID               Owner's page-scoped ID (7386353388108184)
-//   PAGE_ID                  Facebook Page ID (376260662410328)
-//   TELEGRAM_BOT_TOKEN       Owner-alert bot token from @BotFather
-//   TELEGRAM_CHAT_ID         Owner's Telegram chat ID
 // ============================================================
 const FB_PAGE_TOKEN = Deno.env.get("FB_PAGE_TOKEN") ?? "";
 const GROQ_API_KEY = Deno.env.get("GROQ_API_KEY") ?? "";
@@ -33,6 +14,7 @@ const TELEGRAM_BOT_TOKEN = Deno.env.get("TELEGRAM_BOT_TOKEN") ?? "";
 const TELEGRAM_CHAT_ID = Deno.env.get("TELEGRAM_CHAT_ID") ?? "";
 const kv = await Deno.openKv();
 const GRAPH = "https://graph.facebook.com/v19.0";
+
 // ------------------------------------------------------------
 // Shared helpers
 // ------------------------------------------------------------
@@ -50,6 +32,7 @@ async function sendMessengerText(recipientId: string, text: string): Promise<boo
     return false;
   }
 }
+
 async function sendTelegram(text: string): Promise<boolean> {
   if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) return false;
   try {
@@ -68,9 +51,7 @@ async function sendTelegram(text: string): Promise<boolean> {
     return false;
   }
 }
-// Every owner alert goes through here.
-// Telegram has no 24-hour window, so it always lands. Messenger is still
-// attempted so he also sees it there whenever that window happens to be open.
+
 async function notifyOwner(text: string): Promise<void> {
   const viaTelegram = await sendTelegram(text);
   const viaMessenger = await sendMessengerText(OWNER_PSID, text);
@@ -78,9 +59,11 @@ async function notifyOwner(text: string): Promise<void> {
     console.error("OWNER ALERT NOT DELIVERED on any channel:", text.slice(0, 120));
   }
 }
+
 function manilaNow(): Date {
-  return new Date(Date.now() + 8 * 60 * 60 * 1000); // UTC+8, no DST
+  return new Date(Date.now() + 8 * 60 * 60 * 1000); // UTC+8
 }
+
 function manilaDateStrings(d: Date) {
   const months = [
     "January", "February", "March", "April", "May", "June",
@@ -90,6 +73,7 @@ function manilaDateStrings(d: Date) {
   const short = `${d.getUTCMonth() + 1}/${d.getUTCDate()}/${d.getUTCFullYear()}`;
   return { long, short };
 }
+
 async function seenBefore(key: string, ttlMs: number): Promise<boolean> {
   const k = ["seen", key];
   const existing = await kv.get(k);
@@ -97,6 +81,7 @@ async function seenBefore(key: string, ttlMs: number): Promise<boolean> {
   await kv.set(k, true, { expireIn: ttlMs });
   return false;
 }
+
 async function geminiJson(prompt: string): Promise<Record<string, unknown>> {
   try {
     const res = await fetch(
@@ -120,6 +105,7 @@ async function geminiJson(prompt: string): Promise<Record<string, unknown>> {
     return {};
   }
 }
+
 // ------------------------------------------------------------
 // Workflow 1 — AI Chatbot
 // ------------------------------------------------------------
@@ -147,17 +133,21 @@ Keep replies short, suitable for Messenger.
 CRITICAL BOOKING RULE:
 Only add the booking tag when you have ALL FOUR of these from the client: their real name, the service, the date, and the time. If any one is missing, ask for it and do NOT add the tag. Never invent, guess, or use a placeholder for the name — never write things like "Hindi pa nakumpirma", "unknown", "client", or "N/A". The name must be one the client actually typed.
 When and only when all four are confirmed, add this exact tag at the end of your reply: [BOOKING_CONFIRMED: name=NAME, service=SERVICE, date=DATE, time=TIME]`;
+
 type ChatMsg = { role: "user" | "assistant"; content: string };
+
 async function getHistory(senderId: string): Promise<ChatMsg[]> {
   const entry = await kv.get<ChatMsg[]>(["chat_history", senderId]);
   return entry.value ?? [];
 }
+
 async function saveHistory(senderId: string, history: ChatMsg[]) {
-  const trimmed = history.slice(-20); // last 10 exchanges
+  const trimmed = history.slice(-20);
   await kv.set(["chat_history", senderId], trimmed, {
     expireIn: 7 * 24 * 60 * 60 * 1000,
   });
 }
+
 async function groqChat(history: ChatMsg[], userMessage: string): Promise<string> {
   try {
     const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
@@ -167,7 +157,7 @@ async function groqChat(history: ChatMsg[], userMessage: string): Promise<string
         Authorization: `Bearer ${GROQ_API_KEY}`,
       },
       body: JSON.stringify({
-        model: "llama-3.1-8b-instant",
+        model: "openai/gpt-oss-20b",
         messages: [
           { role: "system", content: SYSTEM_PROMPT },
           ...history,
@@ -188,6 +178,7 @@ async function groqChat(history: ChatMsg[], userMessage: string): Promise<string
     return "Sorry, please try again.";
   }
 }
+
 async function handleChatMessage(senderId: string, messageText: string) {
   const history = await getHistory(senderId);
   const rawReply = await groqChat(history, messageText);
@@ -214,6 +205,7 @@ async function handleChatMessage(senderId: string, messageText: string) {
     );
   }
 }
+
 // ------------------------------------------------------------
 // Workflow 4 — BUSY/OPEN schedule blocking
 // ------------------------------------------------------------
@@ -223,7 +215,7 @@ async function handleScheduleCommand(postMessage: string) {
   const dateText = postMessage.replace(/^(BUSY|OPEN)\s*/i, "").trim();
   const { long: today } = manilaDateStrings(manilaNow());
   const parsed = await geminiJson(
-    `Extract the specific date or date range from this text and return ONLY a JSON object with no extra text:\nText: '${dateText}'\nToday's date in Philippines time: ${today}\n\nReturn format:\n{"dates": ["Month Day, Year", "Month Day, Year"]}\n\nExamples:\n- 'July 10' -> {"dates": ["July 10, 2026"]}\n- 'bukas' -> {"dates": [next day date]}\n- 'July 10-15' -> {"dates": ["July 10, 2026","July 11, 2026","July 12, 2026","July 13, 2026","July 14, 2026","July 15, 2026"]}\n- 'this week' -> {"dates": [all remaining days this week]}`,
+    `Extract the specific date or date range from this text and return ONLY a JSON object with no extra text:\nText: '${dateText}'\nToday's date in Philippines time: ${today}\n\nReturn format:\n{"dates": ["Month Day, Year", "Month Day, Year"]}`,
   );
   const dates: string[] = Array.isArray(parsed.dates) ? (parsed.dates as string[]) : [];
   if (SHEETS_DATA_URL) {
@@ -239,6 +231,7 @@ async function handleScheduleCommand(postMessage: string) {
     `✅ Schedule updated!\n${action === "BUSY" ? "🔴 BLOCKED" : "🟢 OPENED"}: ${dateText}\n\nThe chatbot will automatically handle bookings for these dates.`,
   );
 }
+
 // ------------------------------------------------------------
 // Workflow 2 — Daily 12PM Manila reminder (04:00 UTC)
 // ------------------------------------------------------------
@@ -267,14 +260,14 @@ async function dailyClientReminder() {
   }
 }
 Deno.cron("daily client reminder", "0 4 * * *", dailyClientReminder);
+
 // ------------------------------------------------------------
-// Main webhook server — single endpoint, routes by payload
+// Main webhook server
 // ------------------------------------------------------------
 async function processEvents(body: Record<string, unknown>) {
   console.log("RAW PAYLOAD:", JSON.stringify(body).slice(0, 500));
   const entries = (body.entry as Record<string, unknown>[]) ?? [];
   for (const entry of entries) {
-    // ---- Messenger events → Workflow 1 ----
     const messagingEvents = (entry.messaging as Record<string, unknown>[]) ?? [];
     for (const ev of messagingEvents) {
       const message = ev.message as Record<string, unknown> | undefined;
@@ -287,7 +280,6 @@ async function processEvents(body: Record<string, unknown>) {
       if (mid && (await seenBefore(`mid_${mid}`, 60 * 60 * 1000))) continue;
       await handleChatMessage(senderId, messageText);
     }
-    // ---- Feed events → Workflow 4 only (BUSY / OPEN) ----
     const changes = (entry.changes as Record<string, unknown>[]) ?? [];
     for (const change of changes) {
       if (change.field !== "feed") continue;
@@ -301,7 +293,6 @@ async function processEvents(body: Record<string, unknown>) {
       if (item && blockedItems.includes(item)) continue;
       const postMessage = String(value.message ?? value.story ?? "");
       if (!postMessage) continue;
-      // Only BUSY / OPEN posts do anything. All other posts are ignored.
       const upper = postMessage.toUpperCase();
       if (!upper.startsWith("BUSY") && !upper.startsWith("OPEN")) continue;
       const postId = String(value.post_id ?? "");
@@ -311,6 +302,7 @@ async function processEvents(body: Record<string, unknown>) {
     }
   }
 }
+
 Deno.serve(async (req: Request) => {
   const url = new URL(req.url);
   if (url.pathname === "/" && req.method === "GET") {
@@ -331,7 +323,7 @@ Deno.serve(async (req: Request) => {
     );
   }
   if (url.pathname === "/test-owner") {
-    const msg = "✅ Test alert from Pain RHEYlief House automation.";
+    const msg = "✅ Test alert from Pain Rheylief House automation.";
     const tg = await sendTelegram(msg);
     const fb = await sendMessengerText(OWNER_PSID, msg);
     return new Response(
@@ -353,7 +345,6 @@ Deno.serve(async (req: Request) => {
   if (url.pathname !== "/webhook") {
     return new Response("Not found", { status: 404 });
   }
-  // Facebook webhook verification handshake
   if (req.method === "GET") {
     const mode = url.searchParams.get("hub.mode");
     const token = url.searchParams.get("hub.verify_token");
@@ -373,7 +364,6 @@ Deno.serve(async (req: Request) => {
     } catch {
       return new Response("Bad request", { status: 400 });
     }
-    // Respond to Facebook immediately; keep processing in the background
     queueMicrotask(() => {
       processEvents(body).catch((e) => console.error("Event processing error:", e));
     });
